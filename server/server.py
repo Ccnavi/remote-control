@@ -46,8 +46,8 @@ class Room:
     room_id: str
     password_hash: str = ""  # sha256 of password, empty = no password
     host: Optional[Peer] = None
-    viewers: dict[str, Peer] = {}
-    peers: dict[str, Peer] = field(default_factory=dict)  # all peers by id
+    viewers: dict = field(default_factory=dict)
+    peers: dict = field(default_factory=dict)  # all peers by id
 
     def check_password(self, password: str) -> bool:
         if not self.password_hash:

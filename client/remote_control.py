@@ -537,6 +537,24 @@ class RemoteControlApp(QMainWindow):
         tip_layout.addWidget(QLabel("Ctrl+Alt+X  断开连接"))
         left_layout.addWidget(tip_group)
 
+        # ====== 快捷工具栏 ======
+        tool_group = QGroupBox("快捷工具")
+        tool_layout = QVBoxLayout(tool_group)
+        tool_layout.setSpacing(4)
+
+        self.btn_file = QPushButton("📁 传文件")
+        self.btn_file.setStyleSheet("background:#FF9800; color:white;")
+        self.btn_file.clicked.connect(self._show_file_dialog)
+        tool_layout.addWidget(self.btn_file)
+
+        self.btn_chat = QPushButton("💬 聊天")
+        self.btn_chat.setStyleSheet("background:#2196F3; color:white;")
+        self.btn_chat.setCheckable(True)
+        self.btn_chat.toggled.connect(self._toggle_chat)
+        tool_layout.addWidget(self.btn_chat)
+
+        left_layout.addWidget(tool_group)
+
         # 弹性空间
         left_layout.addStretch()
 
@@ -580,6 +598,7 @@ class RemoteControlApp(QMainWindow):
         # 添加到主布局
         main_layout.addWidget(left_panel)
         main_layout.addWidget(right_panel, 1)
+        main_layout.addWidget(self.chat_widget)
 
         # 初始化预设显示
         self._set_preset(40, 10, 80)
@@ -600,6 +619,90 @@ class RemoteControlApp(QMainWindow):
         color = colors.get(quality, "#888")
         self.preset_label.setText(f"当前: {name}")
         self.preset_label.setStyleSheet(f"color:{color}; font-weight:bold;")
+
+    # ---------- 聊天 ----------
+
+    def _toggle_chat(self, visible: bool):
+        """切换聊天面板"""
+        self.chat_widget.setVisible(visible)
+        self.btn_chat.setText("💬 聊天" if not visible else "✕ 关闭聊天")
+
+    def _send_chat(self):
+        """发送聊天消息"""
+        text = self.chat_input.text().strip()
+        if not text or not self.connected:
+            return
+        target = "host" if self.current_role == "viewer" else "all"
+        self.ws_thread.send({
+            "type": "chat",
+            "text": text,
+            "target": target,
+        })
+        name = "我" if self.current_role == "viewer" else "被控端"
+        self.chat_display.append(f"<b style='color:#4CAF50;'>{name}:</b> {text}")
+        self.chat_input.clear()
+
+    def _on_chat_message(self, text: str, name: str):
+        """收到聊天消息"""
+        self.chat_display.append(f"<b style='color:#2196F3;'>{name}:</b> {text}")
+        # 如果聊天面板没打开，闪烁提示
+        if not self.chat_widget.isVisible():
+            self.btn_chat.setStyleSheet(
+                "background:#f44336; color:white; animation: pulse 1s;")
+
+    # ---------- 文件传输 ----------
+
+    def _show_file_dialog(self):
+        """显示文件选择对话框"""
+        if not self.connected:
+            QMessageBox.information(self, "提示", "请先连接服务器")
+            return
+        from PyQt5.QtWidgets import QFileDialog
+        paths, _ = QFileDialog.getOpenFileNames(self, "选择要发送的文件")
+        if paths:
+            self._send_files(paths)
+
+    def _send_files(self, paths: list):
+        """发送文件列表"""
+        for filepath in paths:
+            import os as _os
+            fname = _os.path.basename(filepath)
+            fsize = _os.path.getsize(filepath)
+            fid = f"f{int(time.time() * 1000)}"
+
+            # 发送文件元数据
+            target = "host" if self.current_role == "viewer" else "viewer"
+            self.ws_thread.send({
+                "type": "file_meta",
+                "file_id": fid,
+                "name": fname,
+                "size": fsize,
+                "target": target,
+            })
+
+            # 分块发送
+            CHUNK = 64 * 1024  # 64KB
+            offset = 0
+            with open(filepath, "rb") as f:
+                while offset < fsize:
+                    chunk = f.read(CHUNK)
+                    import base64
+                    b64 = base64.b64encode(chunk).decode()
+                    final = (offset + len(chunk)) >= fsize
+                    self.ws_thread.send({
+                        "type": "file_chunk",
+                        "file_id": fid,
+                        "chunk": b64,
+                        "offset": offset,
+                        "final": final,
+                        "target": target,
+                    })
+                    offset += len(chunk)
+
+            self.status_label.setText(f"📁 已发送: {fname}")
+            log.info(f"文件已发送: {fname} ({fsize} bytes)")
+
+    # ---------- 全屏 ----------
 
     def _toggle_fullscreen(self):
         """切换全屏"""
@@ -760,6 +863,40 @@ class RemoteControlApp(QMainWindow):
 
         elif msg_type == "pong":
             pass
+        elif msg_type == "chat":
+            self._on_chat_message(msg.get("text", ""), msg.get("name", "未知"))
+        elif msg_type == "clipboard":
+            text = msg.get("text", "")
+            if text:
+                try:
+                    from PyQt5.QtWidgets import QApplication
+                    QApplication.clipboard().setText(text)
+                except:
+                    pass
+        elif msg_type == "file_meta":
+            fname = msg.get("name", "")
+            fsize = msg.get("size", 0)
+            fid = msg.get("file_id", "")
+            self.status_label.setText(f"📁 收到文件: {fname} ({fsize/1024:.0f}KB)")
+            log.info(f"收到文件: {fname}")
+            # Auto-accept (TODO: add accept/reject dialog)
+            self.ws_thread.send({"type": "file_accept", "file_id": fid})
+        elif msg_type == "file_chunk":
+            fid = msg.get("file_id", "")
+            chunk_b64 = msg.get("chunk", "")
+            offset = msg.get("offset", 0)
+            final = msg.get("final", False)
+            # Track received chunks in memory (for demo)
+            if not hasattr(self, '_file_buffers'):
+                self._file_buffers = {}
+            if fid not in self._file_buffers:
+                self._file_buffers[fid] = bytearray()
+            if chunk_b64:
+                self._file_buffers[fid].extend(base64.b64decode(chunk_b64))
+            if final:
+                size = len(self._file_buffers[fid])
+                self.status_label.setText(f"📁 文件接收完成 ({size/1024:.0f}KB)")
+                self._file_buffers.pop(fid, None)
         elif msg_type == "error":
             self.status_label.setText(f"❌ 错误: {msg.get('msg')}")
 
