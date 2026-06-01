@@ -521,12 +521,28 @@ class RemoteControlApp(QMainWindow):
         self._toggle_connection()
 
     def disconnect_server(self):
-        """断开连接"""
-        self.ws_thread.disconnect()
+        """断开连接（安全清理所有线程）"""
+        # 先停定时器
+        self._stop_frame_timer()
+        self.latest_jpeg = None
+
+        # 停捕获线程
         self.capture_thread.stop_capture()
+        if self.capture_thread.isRunning():
+            self.capture_thread.wait(2000)
+
+        # 断开 WebSocket
+        self.ws_thread._should_reconnect = False
+        self.ws_thread.disconnect()
+        if self.ws_thread.isRunning():
+            self.ws_thread.wait(2000)
+
+        self.connected = False
 
         if self.current_role == "viewer":
             self.view_stack.setCurrentIndex(0)
+            self.viewer_label.clear()
+            self.viewer_label.setPixmap(QPixmap())
 
         self.connect_btn.setText("📡 连接")
         self.connect_btn.setEnabled(True)
@@ -553,8 +569,10 @@ class RemoteControlApp(QMainWindow):
                     scale_factor=sf,
                 )
             else:
-                # 主控端，切换到画面显示
+                # 主控端，切换到画面显示，启动帧定时器
                 self.view_stack.setCurrentIndex(1)
+                self._start_frame_timer()
+                self.latest_jpeg = None
         else:
             if self._should_reconnect():
                 self.connect_btn.setText(f"⏳ {status_text}")
@@ -608,32 +626,10 @@ class RemoteControlApp(QMainWindow):
             self.status_label.setText(f"❌ 错误: {msg.get('msg')}")
 
     def _display_frame(self, jpeg_bytes: bytes):
-        """显示画面帧"""
+        """缓存最新帧（由定时器拉取显示）"""
         if self.current_role != "viewer":
             return
-
-        pixmap = QPixmap()
-        pixmap.loadFromData(jpeg_bytes, "JPEG")
-        if pixmap.isNull():
-            return
-
-        self.remote_resolution = (pixmap.width(), pixmap.height())
-
-        # 缩放以适应窗口
-        scaled = pixmap.scaled(
-            self.viewer_label.size(),
-            Qt.KeepAspectRatio,
-            Qt.SmoothTransformation,
-        )
-        self.viewer_label.setPixmap(scaled)
-
-        # FPS 统计
-        self.frame_count += 1
-        elapsed = time.time() - self.fps_timer_elapsed
-        if elapsed >= 2:
-            self.current_fps = self.frame_count / elapsed
-            self.fps_timer_elapsed = time.time()
-            self.frame_count = 0
+        self.latest_jpeg = jpeg_bytes
 
     def _on_frame_captured(self, jpeg_bytes: bytes):
         """屏幕捕获完成（被控模式）"""
@@ -701,46 +697,109 @@ class RemoteControlApp(QMainWindow):
 
     # ---------- 鼠标/键盘事件转发（主控模式）----------
 
-    def mousePressEvent(self, event):
-        super().mousePressEvent(event)
-        if self.connected and self.current_role == "viewer":
-            data = self._map_mouse(event.x(), event.y(), event.button())
-            self.ws_thread.send({"type": "input", "event": "click", "data": data})
+    def _viewer_mouse_event(self, event, event_type: str):
+        """由 RemoteScreenLabel 调用的鼠标事件处理（坐标已相对 label）"""
+        if not self.connected or self.current_role != "viewer":
+            return
 
-    def mouseMoveEvent(self, event):
-        super().mouseMoveEvent(event)
-        if self.connected and self.current_role == "viewer":
-            data = self._map_mouse(event.x(), event.y())
-            self.ws_thread.send({"type": "input", "event": "mousemove", "data": data})
+        # 映射坐标到远程分辨率
+        rx, ry = self._map_to_remote(event.x(), event.y())
+        btn_map = {1: "left", 2: "right", 4: "middle"}
+        data = {
+            "x": rx, "y": ry,
+            "button": btn_map.get(event.button(), "left") if hasattr(event, 'button') else "left",
+        }
+        self.ws_thread.send({"type": "input", "event": event_type, "data": data})
 
-    def wheelEvent(self, event: QWheelEvent):
-        if self.connected and self.current_role == "viewer":
-            data = {"x": event.x(), "y": event.y(), "amount": event.angleDelta().y() // 120}
-            self.ws_thread.send({"type": "input", "event": "scroll", "data": data})
+    def _viewer_mouse_move(self, event):
+        if not self.connected or self.current_role != "viewer":
+            return
+        rx, ry = self._map_to_remote(event.x(), event.y())
+        # 限制发送频率用 last_mouse_pos
+        now = time.time()
+        if not hasattr(self, '_last_mouse_send') or now - self._last_mouse_send > 0.05:
+            self._last_mouse_send = now
+            self.ws_thread.send({
+                "type": "input", "event": "mousemove",
+                "data": {"x": rx, "y": ry},
+            })
 
-    def keyPressEvent(self, event):
-        if event.key() == Qt.Key_Control and event.modifiers() & Qt.AltModifier:
-            if event.key() == Qt.Key_Q:
-                if self.isFullScreen():
-                    self.showNormal()
+    def _viewer_wheel(self, event):
+        if not self.connected or self.current_role != "viewer":
+            return
+        rx, ry = self._map_to_remote(event.x(), event.y())
+        self.ws_thread.send({
+            "type": "input", "event": "scroll",
+            "data": {"x": rx, "y": ry, "amount": event.angleDelta().y() // 120},
+        })
+
+    def _viewer_keypress(self, key_text: str):
+        if not self.connected or self.current_role != "viewer":
+            return
+        self.ws_thread.send({
+            "type": "input", "event": "keypress", "data": {"key": key_text},
+        })
+
+    def _map_to_remote(self, label_x: int, label_y: int):
+        """将 QLabel 上的坐标映射到远程屏幕分辨率"""
+        if not self.viewer_label.pixmap():
+            return (label_x, label_y)
+
+        pix = self.viewer_label.pixmap()
+        pm_w, pm_h = pix.width(), pix.height()
+        label_w = self.viewer_label.width()
+        label_h = self.viewer_label.height()
+
+        if pm_w == 0 or pm_h == 0:
+            return (label_x, label_y)
+
+        # 计算 QLabel 中居中的 pixmap 偏移
+        x_off = (label_w - pm_w) // 2
+        y_off = (label_h - pm_h) // 2
+
+        # 映射到远程分辨率
+        rx = int((label_x - x_off) / pm_w * self.remote_resolution[0])
+        ry = int((label_y - y_off) / pm_h * self.remote_resolution[1])
+        return (max(0, rx), max(0, ry))
+
+    # 帧显示定时器（代替每帧实时更新，防卡死）
+    def _start_frame_timer(self):
+        if not hasattr(self, '_frame_timer') or self._frame_timer is None:
+            self._frame_timer = QTimer()
+            self._frame_timer.timeout.connect(self._display_latest_frame)
+        self._frame_timer.start(50)  # 20fps 最多
+
+    def _stop_frame_timer(self):
+        if hasattr(self, '_frame_timer') and self._frame_timer:
+            self._frame_timer.stop()
+
+    def _display_latest_frame(self):
+        """定时器拉取最新帧"""
+        if not self.latest_jpeg:
+            return
+        try:
+            pixmap = QPixmap()
+            pixmap.loadFromData(self.latest_jpeg, "JPEG")
+            if pixmap.isNull():
                 return
-            elif event.key() == Qt.Key_X:
-                self.disconnect_server()
-                return
-        super().keyPressEvent(event)
 
-        if self.connected and self.current_role == "viewer":
-            key = self._qt_key_to_name(event.key())
-            if key:
-                self.ws_thread.send({"type": "input", "event": "keypress", "data": {"key": key}})
+            self.remote_resolution = (pixmap.width(), pixmap.height())
 
-    def _map_mouse(self, x, y, button=None):
-        """将屏幕坐标映射到远程分辨率"""
-        data = {"x": x, "y": y}
-        if button:
-            btn_map = {1: "left", 2: "right", 4: "middle"}
-            data["button"] = btn_map.get(button, "left")
-        return data
+            scaled = pixmap.scaled(
+                self.viewer_label.size(),
+                Qt.KeepAspectRatio,
+                Qt.SmoothTransformation,
+            )
+            self.viewer_label.setPixmap(scaled)
+
+            self.frame_count += 1
+            elapsed = time.time() - self.fps_timer_elapsed
+            if elapsed >= 2:
+                self.current_fps = self.frame_count / elapsed
+                self.fps_timer_elapsed = time.time()
+                self.frame_count = 0
+        except Exception:
+            pass  # 窗口销毁时忽略
 
     def _qt_key_to_name(self, qt_key):
         mapping = {
@@ -766,33 +825,50 @@ class RemoteControlApp(QMainWindow):
         self.disp_size = (event.size().width(), event.size().height())
 
     def closeEvent(self, event):
-        self.disconnect_server()
+        self._stop_frame_timer()
+        self.capture_thread.stop_capture()
+        self.capture_thread.wait(1000)
+        self.ws_thread._should_reconnect = False
+        self.ws_thread.disconnect()
+        self.ws_thread.wait(1000)
         event.accept()
 
 
 class RemoteScreenLabel(QLabel):
-    """远程画面显示标签 - 支持鼠标事件转发"""
+    """远程画面显示标签 - 鼠标事件直接转发"""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.frame_widget = None
         self.setMouseTracking(True)
+        self.setFocusPolicy(Qt.StrongFocus)
 
     def mousePressEvent(self, event):
         if self.frame_widget:
-            self.frame_widget.mousePressEvent(event)
+            self.frame_widget._viewer_mouse_event(event, "click")
 
     def mouseReleaseEvent(self, event):
         if self.frame_widget:
-            self.frame_widget.mouseReleaseEvent(event)
+            self.frame_widget._viewer_mouse_event(event, "mouseup")
+
+    def mouseDoubleClickEvent(self, event):
+        if self.frame_widget:
+            self.frame_widget._viewer_mouse_event(event, "click")
 
     def mouseMoveEvent(self, event):
         if self.frame_widget:
-            self.frame_widget.mouseMoveEvent(event)
+            self.frame_widget._viewer_mouse_move(event)
 
     def wheelEvent(self, event):
         if self.frame_widget:
-            self.frame_widget.wheelEvent(event)
+            self.frame_widget._viewer_wheel(event)
+
+    def keyPressEvent(self, event):
+        if self.frame_widget:
+            key = self.frame_widget._qt_key_to_name(event.key())
+            if key:
+                self.frame_widget._viewer_keypress(key)
+        super().keyPressEvent(event)
 
 
 # ============================================================
