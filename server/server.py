@@ -103,7 +103,7 @@ rooms: dict[str, Room] = {}
 MAX_ROOMS = 100
 MAX_VIEWERS_PER_ROOM = 10
 
-async def handle_client(ws: WebSocketServerProtocol):
+async def handle_client(ws: WebSocketServerProtocol, path: str = None):
     """处理单个客户端连接"""
     peer_id = f"p{int(time.time() * 1000) % 100000:05d}"
     peer: Optional[Peer] = None

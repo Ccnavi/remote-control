@@ -172,11 +172,13 @@ class ScreenCaptureThread(QThread):
         self.quality = 60
         self.fps = 15
         self.monitor = 1
+        self.scale_factor = 0.5  # 默认 50%
 
-    def start_capture(self, quality=60, fps=15, monitor=1):
+    def start_capture(self, quality=60, fps=15, monitor=1, scale_factor=0.5):
         self.quality = quality
         self.fps = fps
         self.monitor = monitor
+        self.scale_factor = scale_factor
         self.running = True
         self.start()
 
@@ -196,6 +198,15 @@ class ScreenCaptureThread(QThread):
                     monitor = sct.monitors[self.monitor]
                     img = sct.grab(monitor)
                     pil_img = Image.frombytes("RGB", img.size, img.rgb)
+
+                    # 缩放
+                    if self.scale_factor < 1.0:
+                        w, h = pil_img.size
+                        pil_img = pil_img.resize(
+                            (int(w * self.scale_factor), int(h * self.scale_factor)),
+                            Image.LANCZOS,
+                        )
+
                     buf = io.BytesIO()
                     pil_img.save(buf, format="JPEG", quality=self.quality, optimize=True)
                     self.frame_captured.emit(buf.getvalue())
@@ -332,25 +343,54 @@ class RemoteControlApp(QMainWindow):
         host_layout.setSpacing(6)
 
         host_layout.addWidget(QLabel("画质:"), 0, 0)
+        # 速度模式预设
+        speed_layout = QHBoxLayout()
+        self.btn_fast = QPushButton("🚀 流畅")
+        self.btn_balanced = QPushButton("⚖️ 均衡")
+        self.btn_quality = QPushButton("🎨 高清")
+        self.btn_fast.setStyleSheet("background:#4CAF50; color:white;")
+        self.btn_balanced.setStyleSheet("background:#FF9800; color:white;")
+        self.btn_quality.setStyleSheet("background:#f44336; color:white;")
+        self.btn_fast.clicked.connect(lambda: self._set_preset(20, 5, 50))
+        self.btn_balanced.clicked.connect(lambda: self._set_preset(40, 10, 80))
+        self.btn_quality.clicked.connect(lambda: self._set_preset(70, 20, 100))
+        speed_layout.addWidget(self.btn_fast)
+        speed_layout.addWidget(self.btn_balanced)
+        speed_layout.addWidget(self.btn_quality)
+        host_layout.addLayout(speed_layout)
+        host_layout.addWidget(QLabel(""))
+
+        self.preset_label = QLabel("当前: 均衡模式")
+        self.preset_label.setStyleSheet("color:#FF9800; font-weight:bold;")
+        host_layout.addWidget(self.preset_label)
+
+        host_layout.addWidget(QLabel("画质:"))
         self.quality_slider = QSlider(Qt.Horizontal)
         self.quality_slider.setRange(10, 95)
-        self.quality_slider.setValue(60)
-        self.quality_label = QLabel("60")
-        self.quality_slider.valueChanged.connect(lambda v: self.quality_label.setText(str(v)))
+        self.quality_slider.setValue(40)
+        self.quality_label = QLabel("40")
+        self.quality_slider.valueChanged.connect(
+            lambda v: self.quality_label.setText(str(v)))
         host_layout.addWidget(self.quality_slider, 0, 1)
         host_layout.addWidget(self.quality_label, 0, 2)
 
-        host_layout.addWidget(QLabel("帧率:"), 1, 0)
+        host_layout.addWidget(QLabel("帧率:"))
         self.fps_spin = QSpinBox()
         self.fps_spin.setRange(1, 30)
-        self.fps_spin.setValue(15)
+        self.fps_spin.setValue(10)
         host_layout.addWidget(self.fps_spin, 1, 1)
 
-        host_layout.addWidget(QLabel("显示器:"), 2, 0)
+        host_layout.addWidget(QLabel("缩放:"))
+        self.scale_combo = QComboBox()
+        self.scale_combo.addItems(["原始", "75%", "50% (推荐)", "25%"])
+        self.scale_combo.setCurrentIndex(2)  # 50%
+        host_layout.addWidget(self.scale_combo, 2, 1)
+
+        host_layout.addWidget(QLabel("显示器:"))
         self.monitor_spin = QSpinBox()
         self.monitor_spin.setRange(1, 4)
         self.monitor_spin.setValue(1)
-        host_layout.addWidget(self.monitor_spin, 2, 1)
+        host_layout.addWidget(self.monitor_spin, 3, 1)
 
         host_group.setEnabled(False)
         left_layout.addWidget(host_group)
@@ -407,7 +447,25 @@ class RemoteControlApp(QMainWindow):
         main_layout.addWidget(left_panel)
         main_layout.addWidget(right_panel, 1)
 
+        # 初始化预设显示
+        self._set_preset(40, 10, 80)
+
     # ---------- 事件处理 ----------
+
+    def _set_preset(self, quality, fps, scale_pct):
+        """设置速度预设"""
+        self.quality_slider.setValue(quality)
+        self.fps_spin.setValue(fps)
+        scale_map = {50: 2, 80: 1, 100: 0}  # scale_pct -> combo index
+        idx = scale_map.get(scale_pct, 2)
+        self.scale_combo.setCurrentIndex(idx)
+
+        names = {20: "🚀 流畅", 40: "⚖️ 均衡", 70: "🎨 高清"}
+        colors = {20: "#4CAF50", 40: "#FF9800", 70: "#f44336"}
+        name = names.get(quality, "自定义")
+        color = colors.get(quality, "#888")
+        self.preset_label.setText(f"当前: {name}")
+        self.preset_label.setStyleSheet(f"color:{color}; font-weight:bold;")
 
     def _on_mode_changed(self):
         """模式切换"""
@@ -478,10 +536,14 @@ class RemoteControlApp(QMainWindow):
 
             # 如果是被控端模式，启动屏幕捕获
             if self.current_role == "host":
+                scale_text = self.scale_combo.currentText()
+                scale_map = {"原始": 1.0, "75%": 0.75, "50% (推荐)": 0.5, "25%": 0.25}
+                sf = scale_map.get(scale_text, 0.5)
                 self.capture_thread.start_capture(
                     quality=self.quality_slider.value(),
                     fps=self.fps_spin.value(),
                     monitor=self.monitor_spin.value(),
+                    scale_factor=sf,
                 )
             else:
                 # 主控端，切换到画面显示
