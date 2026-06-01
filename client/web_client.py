@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 RemoteControl Web Client v4.0
-Web-based UI served locally, browser renders the interface
+ToDesk-inspired web UI, served locally, rendered in browser.
 """
 
 import asyncio
@@ -13,142 +13,99 @@ import os
 import sys
 import logging
 import webbrowser
-import threading
-from dataclasses import dataclass, field
-from typing import Optional
 
 import aiohttp
 from aiohttp import web
 
-try:
-    import mss
-except ImportError:
-    mss = None
-try:
-    from PIL import Image, ImageDraw
-except ImportError:
-    Image = None
-try:
-    import pyautogui
-except ImportError:
-    pyautogui = None
-try:
-    from pynput.keyboard import Controller, Key
-except ImportError:
-    Controller = None
-    Key = None
+try: import mss
+except: mss = None
+try: from PIL import Image, ImageDraw
+except: Image = None
+try: import pyautogui
+except: pyautogui = None
+try: from pynput.keyboard import Controller, Key
+except: Controller = Key = None
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-log = logging.getLogger("webclient")
+log = logging.getLogger("rc")
 
-# =========================================================================
-# 内嵌 Web UI (完整 HTML/CSS/JS)
-# =========================================================================
+# =====================================================================
+# HTML/CSS/JS - ToDesk Inspired
+# =====================================================================
 
-WEB_UI = r"""<!DOCTYPE html>
+HTML = """<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>RemoteControl</title>
 <style>
-* { margin:0; padding:0; box-sizing:border-box; }
-body { font-family: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
-       background: #0d0d1a; color: #c8c8d4; height:100vh; overflow:hidden; user-select:none; }
-::-webkit-scrollbar { width:4px; } ::-webkit-scrollbar-track { background:transparent; }
-::-webkit-scrollbar-thumb { background:#2a2a4a; border-radius:2px; }
+:root {
+  --primary:#0070F9; --primary-hover:#0058d0;
+  --bg:#1c1c1e; --bg2:#2c2c2e; --sidebar:#262628;
+  --text:#f0f0f0; --text2:#98989e; --text3:#666670;
+  --border:#38383a; --success:#36BA78; --danger:#ff3b30;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font:-apple-system,"Segoe UI",system-ui,sans-serif;background:var(--bg);color:var(--text);height:100vh;overflow:hidden}
+::-webkit-scrollbar{width:4px}::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px}
 
-/* Layout */
-#app { display:flex; height:100vh; }
-#sidebar { width:240px; min-width:240px; background:#16213e; display:flex; flex-direction:column;
-           border-right:1px solid #0f3460; }
-#main { flex:1; display:flex; flex-direction:column; background:#0d0d1a; position:relative; }
-#chatPanel { width:260px; min-width:260px; background:#16213e; border-left:1px solid #0f3460;
-             display:none; flex-direction:column; }
+#app{display:flex;height:100vh}
+#sidebar{width:220px;min-width:220px;background:var(--sidebar);display:flex;flex-direction:column;border-right:1px solid var(--border)}
+#main{flex:1;display:flex;flex-direction:column;background:var(--bg);position:relative}
+#chatPanel{width:250px;background:var(--sidebar);border-left:1px solid var(--border);display:none;flex-direction:column}
 
-/* Sidebar */
-.sidebar-inner { padding:16px; overflow-y:auto; flex:1; }
-.logo { font-size:16px; font-weight:700; color:#e0e0ff; margin-bottom:16px; display:flex; align-items:center; gap:8px; }
-.status-dot { width:8px; height:8px; border-radius:50%; display:inline-block; }
-.section-title { font-size:10px; color:#6a6a8a; text-transform:uppercase; letter-spacing:1.5px;
-                 margin:16px 0 8px 0; font-weight:600; }
-.input-group { margin-bottom:8px; }
-.input-group label { display:block; font-size:11px; color:#8888bb; margin-bottom:4px; }
-.input-group input, .input-group select { width:100%; padding:10px 12px; background:#0f3460;
-    border:1px solid #1a4a7a; border-radius:6px; color:#e0e0ff; font-size:13px; outline:none;
-    transition:border .2s; }
-.input-group input:focus { border-color:#4CAF50; }
-.input-group input::placeholder { color:#4a6a8a; }
+.sidebar-inner{padding:12px;overflow-y:auto;flex:1}
+.logo{font-size:14px;font-weight:700;margin-bottom:12px;display:flex;align-items:center;gap:8px}
+.logo .dot{width:7px;height:7px;border-radius:50%;background:var(--text3)}
+.s-label{font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.8px;margin:12px 0 5px;font-weight:600}
+.inp{margin-bottom:4px}
+.inp input,.inp select{width:100%;padding:7px 9px;background:var(--bg);border:1px solid var(--border);border-radius:5px;color:var(--text);font-size:12px;outline:none}
+.inp input:focus{border-color:var(--primary)}
+.inp input::placeholder{color:var(--text3)}
 
-.mode-toggle { display:flex; background:#1a1a35; border-radius:8px; padding:2px; margin:8px 0; }
-.mode-toggle button { flex:1; padding:8px; border:none; background:transparent; color:#6a6a8a;
-    font-size:13px; cursor:pointer; border-radius:6px; transition:all .2s; font-weight:500; }
-.mode-toggle button.active { background:#4CAF50; color:#fff; }
+.mt{display:flex;background:var(--bg);border-radius:5px;padding:2px;margin:6px 0}
+.mt button{flex:1;padding:5px;border:none;background:transparent;color:var(--text2);font-size:11px;cursor:pointer;border-radius:4px;transition:.15s;font-weight:500}
+.mt button.active{background:var(--primary);color:#fff}
 
-.btn { display:block; width:100%; padding:10px; border:none; border-radius:6px; font-size:13px;
-       font-weight:600; cursor:pointer; transition:all .2s; margin-bottom:6px; }
-.btn-primary { background:#4CAF50; color:#fff; }
-.btn-primary:hover { background:#45a049; }
-.btn-primary:disabled { background:#2a3a2a; color:#6a6a8a; cursor:not-allowed; }
-.btn-danger { background:#f44336; color:#fff; }
-.btn-action { background:#0f3460; color:#c8c8d4; border:1px solid #1a4a7a; }
-.btn-action:hover { background:#1a4a7a; color:#fff; }
-.btn-sm { padding:6px 12px; font-size:12px; display:inline-block; width:auto; }
+.btn{width:100%;padding:7px;border:none;border-radius:5px;font-size:12px;font-weight:600;cursor:pointer;transition:.15s;margin-bottom:4px}
+.btn-primary{background:var(--primary);color:#fff}
+.btn-primary:hover{background:var(--primary-hover)}
+.btn-danger{background:var(--danger);color:#fff}
+.btn-plain{background:var(--bg);color:var(--text2);border:1px solid var(--border)}
+.btn-plain:hover{background:var(--border);color:var(--text)}
+.btn-sm{padding:4px 10px;width:auto;display:inline-flex;align-items:center;gap:3px;font-size:11px}
 
-.pills { display:flex; gap:4px; margin:8px 0; }
-.pills button { flex:1; padding:6px 10px; border:1px solid #2a2a4a; border-radius:14px;
-    background:transparent; color:#6a6a8a; font-size:11px; cursor:pointer; transition:all .2s; }
-.pills button.active { background:#4CAF50; color:#fff; border-color:#4CAF50; }
-.pills button:hover:not(.active) { border-color:#4CAF50; color:#4CAF50; }
+.pills{display:flex;gap:3px;margin:6px 0}
+.pills button{flex:1;padding:3px 8px;border:1px solid var(--border);border-radius:10px;background:transparent;color:var(--text2);font-size:10px;cursor:pointer;transition:.15s}
+.pills button.active{background:var(--primary);color:#fff;border-color:var(--primary)}
 
-.opt-row { display:flex; gap:8px; align-items:center; margin:6px 0; }
-.opt-row label { font-size:11px; color:#8888bb; min-width:36px; }
-.opt-row input[type=range] { flex:1; accent-color:#4CAF50; }
-.opt-row .val { font-size:12px; color:#e0e0ff; min-width:24px; }
-.opt-row select, .opt-row input[type=number] { background:#0f3460; border:1px solid #1a4a7a;
-    border-radius:4px; color:#e0e0ff; padding:4px 8px; font-size:12px; outline:none; }
+.or{display:flex;gap:5px;align-items:center;margin:3px 0}
+.or label{font-size:10px;color:var(--text2);min-width:28px}
+.or input[type=range]{flex:1;accent-color:var(--primary);height:2px}
+.or .v{font-size:10px;color:var(--text);min-width:18px;text-align:right}
+.or select,.or input[type=number]{background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:2px 5px;font-size:11px;outline:none}
 
-/* Main viewer */
-#placeholder { display:flex; flex-direction:column; align-items:center; justify-content:center;
-    flex:1; color:#333; text-align:center; gap:8px; }
-#placeholder h2 { font-size:22px; color:#444; }
-#placeholder p { font-size:13px; color:#555; line-height:1.8; }
-#screenCanvas { display:none; flex:1; cursor:crosshair; background:#0d0d1a; }
+#placeholder{display:flex;flex-direction:column;align-items:center;justify-content:center;flex:1;gap:6px;color:var(--text3)}
+#screenCanvas{display:none;flex:1;cursor:crosshair}
 
-/* Floating toolbar */
-#toolbar { display:none; position:absolute; bottom:12px; left:50%; transform:translateX(-50%);
-    background:rgba(22,33,62,0.92); backdrop-filter:blur(8px); border-radius:10px;
-    padding:4px 8px; align-items:center; gap:2px; z-index:100; }
-#toolbar button { background:transparent; border:none; color:#c8c8d4; padding:6px 8px;
-    border-radius:4px; cursor:pointer; font-size:16px; transition:background .2s; }
-#toolbar button:hover { background:rgba(76,175,80,0.2); }
-#toolbar .sep { width:1px; height:20px; background:#2a2a4a; margin:0 6px; }
-#toolbar .info { font-size:11px; color:#6a6a8a; padding:0 8px; }
+#toolbar{display:none;position:absolute;top:10px;left:50%;transform:translateX(-50%);
+  background:rgba(38,38,40,0.92);backdrop-filter:blur(8px);border:1px solid var(--border);
+  border-radius:8px;padding:3px 6px;align-items:center;gap:1px;z-index:100}
+#toolbar button{background:transparent;border:none;color:var(--text2);padding:5px 7px;border-radius:4px;cursor:pointer;font-size:14px;transition:.15s}
+#toolbar button:hover{background:var(--bg2);color:var(--text)}
+#toolbar .s{width:1px;height:16px;background:var(--border);margin:0 4px}
+#toolbar .i{font-size:10px;color:var(--text3);padding:0 6px}
 
-/* Chat */
-#chatMessages { flex:1; overflow-y:auto; padding:10px; font-size:12px; }
-.chat-msg { margin-bottom:6px; }
-.chat-msg .name { font-weight:600; }
-.chat-input-row { display:flex; padding:8px; gap:6px; border-top:1px solid #0f3460; }
-.chat-input-row input { flex:1; padding:8px 10px; background:#0f3460; border:1px solid #1a4a7a;
-    border-radius:6px; color:#e0e0ff; font-size:12px; outline:none; }
-.chat-input-row button { padding:8px 14px; background:#4CAF50; border:none; border-radius:6px;
-    color:#fff; font-size:12px; cursor:pointer; }
+#chatMessages{flex:1;overflow-y:auto;padding:8px;font-size:12px}
+.cm{margin-bottom:5px;line-height:1.4}
+.cm .n{font-weight:600}
+.cr{display:flex;padding:6px;gap:4px;border-top:1px solid var(--border)}
+.cr input{flex:1;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:5px;color:var(--text);font-size:11px;outline:none}
+.cr button{padding:6px 12px;background:var(--primary);border:none;border-radius:5px;color:#fff;font-size:11px;cursor:pointer}
 
-/* Toggle switch */
-.toggle-wrap { display:flex; align-items:center; gap:6px; margin:4px 0; font-size:12px; cursor:pointer; }
-.toggle { width:36px; height:20px; background:#2a2a4a; border-radius:10px; position:relative;
-    transition:background .2s; cursor:pointer; flex-shrink:0; }
-.toggle.active { background:#4CAF50; }
-.toggle .knob { width:16px; height:16px; background:#fff; border-radius:50%; position:absolute;
-    top:2px; left:2px; transition:all .2s; }
-.toggle.active .knob { left:18px; }
-
-/* notifications */
-.notif { position:fixed; top:16px; right:16px; background:#1a1a35; border:1px solid #0f3460;
-    border-radius:8px; padding:12px 20px; color:#e0e0ff; font-size:13px; z-index:999;
-    animation: slideIn .3s; max-width:300px; }
-@keyframes slideIn { from { transform:translateX(100%); opacity:0; } to { transform:translateX(0); opacity:1; } }
+.notif{position:fixed;top:14px;right:14px;background:var(--sidebar);border:1px solid var(--border);border-radius:6px;padding:10px 16px;color:var(--text);font-size:12px;z-index:999;max-width:280px;box-shadow:0 4px 20px rgba(0,0,0,.4)}
 </style>
 </head>
 <body>
@@ -156,730 +113,470 @@ body { font-family: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-se
   <!-- Sidebar -->
   <div id="sidebar">
     <div class="sidebar-inner">
-      <div class="logo"><span class="status-dot" id="statusDot" style="background:#666"></span>RemoteControl</div>
+      <div class="logo"><span class="dot" id="statusDot"></span>RemoteControl</div>
 
-      <div class="section-title">连接</div>
-      <div class="input-group">
-        <label>服务器地址</label>
-        <input id="serverInput" value="ws://47.92.148.99:8500">
-      </div>
-      <div class="input-group">
-        <label>房间名</label>
-        <input id="roomInput" value="default" placeholder="两端一致">
-      </div>
-      <div class="input-group">
-        <label>密码</label>
-        <input id="pwdInput" type="password" placeholder="可选">
-      </div>
+      <div class="s-label">连接</div>
+      <div class="inp"><input id="serverInput" value="ws://47.92.148.99:8500"></div>
+      <div class="inp"><input id="roomInput" value="default" placeholder="房间号"></div>
+      <div class="inp"><input id="pwdInput" type="password" placeholder="密码(可选)"></div>
 
-      <div class="mode-toggle" id="modeToggle">
+      <div class="mt" id="modeToggle">
         <button id="modeViewer" class="active">👁 主控</button>
         <button id="modeHost">🖥 被控</button>
       </div>
-
       <button class="btn btn-primary" id="connectBtn">📡 连接</button>
 
-      <div class="section-title">被控端设置</div>
+      <div class="s-label">画质</div>
       <div class="pills" id="presetPills">
-        <button data-json='{"q":20,"f":5,"s":25}'>流畅</button>
-        <button data-json='{"q":45,"f":12,"s":50}' class="active">均衡</button>
-        <button data-json='{"q":75,"f":22,"s":80}'>高清</button>
+        <button data-q="20" data-f="5" data-s="25">流畅</button>
+        <button data-q="45" data-f="12" data-s="50" class="active">均衡</button>
+        <button data-q="75" data-f="22" data-s="80">高清</button>
       </div>
-
-      <div class="opt-row"><label>画质</label><input type="range" min="10" max="95" value="45" id="qualitySlider"><span class="val" id="qualityVal">45</span></div>
-      <div class="opt-row"><label>帧率</label><input type="number" value="12" min="1" max="30" id="fpsInput" style="width:50px">
-        <label style="margin-left:8px">缩放</label>
+      <div class="or">
+        <label>画质</label><input type="range" min="10" max="95" value="45" id="qualitySlider"><span class="v" id="qualityVal">45</span>
+      </div>
+      <div class="or">
+        <label>帧率</label><input type="number" value="12" min="1" max="30" id="fpsInput" style="width:44px">
+        <label style="margin-left:4px">缩放</label>
         <select id="scaleSelect"><option>25%</option><option selected>50%</option><option>75%</option><option>100%</option></select>
       </div>
-      <div class="opt-row">
-        <label>显示器</label><input type="number" value="1" min="1" max="4" style="width:50px">
-        <div class="toggle-wrap" style="margin-left:auto"><span>隐私屏</span><div class="toggle" id="privacyToggle"><div class="knob"></div></div></div>
+      <div class="or">
+        <label>显示器</label><input type="number" value="1" min="1" max="4" id="monitorInput" style="width:40px">
+        <span style="font-size:10px;color:var(--text3);margin-left:auto;cursor:pointer" id="privacyToggle">🛡 隐私</span>
       </div>
 
-      <div class="section-title" style="margin-top:12px">主控端设置</div>
-      <div class="opt-row"><label>缩放</label>
+      <div class="s-label">显示</div>
+      <div class="or">
+        <label>缩放</label>
         <select id="scaleMode" style="flex:1"><option>等比</option><option>拉伸</option><option>原始</option><option>适应宽度</option></select>
       </div>
-      <button class="btn btn-action btn-sm" id="fullscreenBtn" style="width:auto">⛶ 全屏</button>
-      <div id="viewerInfo" style="font-size:11px;color:#6a6a8a;margin-top:4px">等待连接...</div>
+      <div id="viewerInfo" style="font-size:10px;color:var(--text3);margin-top:3px">--</div>
 
-      <div class="section-title" style="margin-top:12px">工具</div>
-      <button class="btn btn-action btn-sm" id="fileBtn">📁 传文件</button>
-      <button class="btn btn-action btn-sm" id="chatBtn">💬 聊天</button>
-
-      <div style="text-align:center;margin-top:auto;padding-top:16px;font-size:10px;color:#4a4a6a">v4.0.0</div>
+      <div class="s-label">工具</div>
+      <div style="display:flex;gap:4px">
+        <button class="btn btn-plain btn-sm" id="fileBtn" style="flex:1">📁 文件</button>
+        <button class="btn btn-plain btn-sm" id="chatBtn" style="flex:1">💬 聊天</button>
+      </div>
+      <div style="text-align:center;margin-top:10px;font-size:9px;color:var(--text3)">v4.0.2</div>
     </div>
   </div>
 
   <!-- Main -->
   <div id="main">
     <div id="placeholder">
-      <h2>🔗 RemoteControl</h2>
-      <p>选择模式 → 输入房间名 → 点击连接<br>
-      🖥 被控：共享本机 &nbsp; 👁 主控：查看远程</p>
+      <div style="font-size:32px;margin-bottom:8px">🔗</div>
+      <div style="font-size:16px;font-weight:600;color:var(--text2)">RemoteControl</div>
+      <div style="font-size:11px;color:var(--text3);margin-top:6px;line-height:1.8">
+        输入房间号 → 连接<br>
+        👁 主控 &nbsp; 🖥 被控
+      </div>
     </div>
     <canvas id="screenCanvas"></canvas>
     <div id="toolbar">
       <button title="全屏" id="tbFullscreen">⛶</button>
-      <button title="传文件" id="tbFile">📁</button>
+      <button title="文件" id="tbFile">📁</button>
       <button title="聊天" id="tbChat">💬</button>
-      <button title="刷新" id="tbRefresh">🔄</button>
-      <div class="sep"></div>
-      <span class="info" id="tbQuality"></span>
-      <span class="info" id="tbFps"></span>
-      <div class="sep"></div>
-      <button title="断开" id="tbDisconnect" style="color:#f44336">✕</button>
+      <span class="s"></span>
+      <span class="i" id="tbQuality"></span>
+      <span class="i" id="tbFps"></span>
+      <span class="s"></span>
+      <button title="断开" id="tbDisconnect" style="color:var(--danger)">✕</button>
     </div>
   </div>
 
   <!-- Chat -->
   <div id="chatPanel">
-    <div style="padding:12px 14px;font-size:14px;font-weight:600;color:#e0e0ff;border-bottom:1px solid #0f3460">💬 聊天</div>
+    <div style="padding:10px 12px;font-size:13px;font-weight:600;border-bottom:1px solid var(--border)">💬 聊天</div>
     <div id="chatMessages"></div>
-    <div class="chat-input-row">
-      <input id="chatInput" placeholder="输入消息..." autocomplete="off">
+    <div class="cr">
+      <input id="chatInput" placeholder="输入..." autocomplete="off">
       <button id="chatSend">发送</button>
     </div>
   </div>
 </div>
 
 <script>
-// ============== State ==============
-const state = {
-  connected: false,
-  role: 'viewer',
-  ws: null,
-  localWs: null,
-  canvas: document.getElementById('screenCanvas'),
-  ctx: document.getElementById('screenCanvas').getContext('2d'),
-  remoteW: 1920, remoteH: 1080,
-  frameCount: 0,
-  fpsTime: Date.now(),
-  currentFps: 0,
-  lastMouseSend: 0,
-  fileBuffers: {},
-  chatVisible: false,
-  fullscreen: false,
-};
+const state={connected:false,role:'viewer',ws:null,canvas:document.getElementById('screenCanvas'),
+  ctx:document.getElementById('screenCanvas').getContext('2d'),remoteW:1920,remoteH:1080,
+  fc:0,fts:Date.now(),fps:0,lms:0,chatVisible:false};
 
-// ============== WebSocket to Local Backend ==============
-function connectLocal() {
-  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const url = `${proto}//${window.location.host}/ws`;
-  state.localWs = new WebSocket(url);
-  state.localWs.onopen = () => { notify('本地已连接'); };
-  state.localWs.onmessage = e => {
-    try { handleLocalMsg(JSON.parse(e.data)); } catch(_) {}
-  };
-  state.localWs.onclose = () => setTimeout(connectLocal, 2000);
+function connectLocal(){
+  const p=location.protocol==='https:'?'wss:':'ws:';
+  state.ws=new WebSocket(p+'//'+location.host+'/ws');
+  state.ws.onopen=()=>notify('已连接');
+  state.ws.onmessage=e=>{try{handleMsg(JSON.parse(e.data))}catch(_){}};
+  state.ws.onclose=()=>setTimeout(connectLocal,2000);
 }
 
-function sendLocal(msg) {
-  if (state.localWs && state.localWs.readyState === WebSocket.OPEN) {
-    state.localWs.send(JSON.stringify(msg));
-  }
-}
+function send(m){state.ws&&state.ws.readyState===WebSocket.OPEN&&state.ws.send(JSON.stringify(m))}
 
-function handleLocalMsg(msg) {
-  switch (msg.type) {
+function handleMsg(m){
+  switch(m.type){
     case 'frame':
-      const b64 = msg.data;
-      const img = new Image();
-      img.onload = () => { drawFrame(img); };
-      img.src = 'data:image/jpeg;base64,' + b64;
+      const i=new Image();
+      i.onload=()=>draw(i);
+      i.src='data:image/jpeg;base64,'+m.data;
       break;
-    case 'connected':
-      setConnected(true);
-      break;
-    case 'disconnected':
-      setConnected(false);
-      break;
-    case 'chat':
-      addChat(msg.name || '未知', msg.text || '');
-      break;
-    case 'notify':
-      notify(msg.text);
-      break;
+    case 'connected':setConnected(true);break;
+    case 'disconnected':setConnected(false);break;
+    case 'chat':addChat(m.name||'?',m.text||'');break;
+    case 'notify':notify(m.text);break;
   }
 }
 
-// ============== Canvas Rendering ==============
-function drawFrame(img) {
-  const c = state.canvas;
-  const mode = document.getElementById('scaleMode').value;
-  const parent = c.parentElement;
-  const pw = parent.clientWidth, ph = parent.clientHeight;
-
-  state.remoteW = img.naturalWidth;
-  state.remoteH = img.naturalHeight;
-
-  let dw, dh;
-  if (mode === '原始') { dw = img.naturalWidth; dh = img.naturalHeight; }
-  else if (mode === '拉伸') { dw = pw; dh = ph; }
-  else if (mode === '适应宽度') { dw = pw; dh = img.naturalHeight * pw / img.naturalWidth; }
-  else { // 等比
-    const r = Math.min(pw / img.naturalWidth, ph / img.naturalHeight);
-    dw = img.naturalWidth * r; dh = img.naturalHeight * r;
-  }
-
-  c.width = pw; c.height = ph;
-  const ctx = state.ctx;
-  ctx.fillStyle = '#0d0d1a'; ctx.fillRect(0, 0, pw, ph);
-  const ox = (pw - dw) / 2, oy = (ph - dh) / 2;
-  ctx.drawImage(img, ox, oy, dw, dh);
-
-  state.frameCount++;
-  const now = Date.now();
-  if (now - state.fpsTime > 2000) {
-    state.currentFps = state.frameCount / ((now - state.fpsTime) / 1000);
-    state.fpsTime = now;
-    state.frameCount = 0;
-    document.getElementById('tbFps').textContent = `${Math.round(state.currentFps)}fps`;
-    document.getElementById('viewerInfo').textContent =
-      `${img.naturalWidth}×${img.naturalHeight} | ${Math.round(state.currentFps)}fps | ${Math.round(dw)}×${Math.round(dh)}`;
-  }
+function draw(img){
+  const c=state.canvas,mode=document.getElementById('scaleMode').value;
+  const pw=c.parentElement.clientWidth,ph=c.parentElement.clientHeight;
+  state.remoteW=img.naturalWidth;state.remoteH=img.naturalHeight;
+  let dw,dh;
+  if(mode==='原始'){dw=img.naturalWidth;dh=img.naturalHeight}
+  else if(mode==='拉伸'){dw=pw;dh=ph}
+  else if(mode==='适应宽度'){dw=pw;dh=img.naturalHeight*pw/img.naturalWidth}
+  else{const r=Math.min(pw/img.naturalWidth,ph/img.naturalHeight);dw=img.naturalWidth*r;dh=img.naturalHeight*r}
+  c.width=pw;c.height=ph;
+  const ctx=state.ctx;
+  ctx.fillStyle='#1c1c1e';ctx.fillRect(0,0,pw,ph);
+  ctx.drawImage(img,(pw-dw)/2,(ph-dh)/2,dw,dh);
+  state.fc++;
+  const n=Date.now();
+  if(n-state.fts>2000){state.fps=state.fc/((n-state.fts)/1000);state.fts=n;state.fc=0;
+    document.getElementById('tbFps').textContent=Math.round(state.fps)+'fps';
+    document.getElementById('viewerInfo').textContent=img.naturalWidth+'×'+img.naturalHeight+' | '+Math.round(state.fps)+'fps';}
 }
 
-// ============== Connection ==============
-function setConnected(v) {
-  state.connected = v;
-  const dot = document.getElementById('statusDot');
-  const btn = document.getElementById('connectBtn');
-  dot.style.background = v ? '#4CAF50' : '#f44336';
-  btn.textContent = v ? '🔴 断开' : '📡 连接';
-  btn.classList.toggle('btn-primary', !v);
-  btn.classList.toggle('btn-danger', v);
-  if (v) {
-    state.canvas.style.display = 'block';
-    document.getElementById('placeholder').style.display = 'none';
-    document.getElementById('toolbar').style.display = 'flex';
-  } else {
-    state.canvas.style.display = 'none';
-    document.getElementById('placeholder').style.display = 'flex';
-    document.getElementById('toolbar').style.display = 'none';
-  }
+function setConnected(v){
+  state.connected=v;
+  const dot=document.getElementById('statusDot');
+  dot.style.background=v?'var(--success)':'var(--text3)';
+  document.getElementById('connectBtn').textContent=v?'🔴 断开':'📡 连接';
+  document.getElementById('connectBtn').className=v?'btn btn-danger':'btn btn-primary';
+  if(v){state.canvas.style.display='block';document.getElementById('placeholder').style.display='none';document.getElementById('toolbar').style.display='flex'}
+  else{state.canvas.style.display='none';document.getElementById('placeholder').style.display='flex';document.getElementById('toolbar').style.display='none'}
 }
 
-function toggleConnection() {
-  if (state.connected) {
-    sendLocal({type: 'disconnect'});
-    return;
-  }
-  const server = document.getElementById('serverInput').value.trim();
-  const room = document.getElementById('roomInput').value.trim();
-  const pwd = document.getElementById('pwdInput').value;
-  const role = document.getElementById('modeHost').classList.contains('active') ? 'host' : 'viewer';
-  if (!server || !room) return notify('请输入服务器和房间名');
-  state.role = role;
-  sendLocal({type: 'connect', server, room, password: pwd, role});
-  notify(`正在连接 ${room}...`);
+function toggleConn(){
+  if(state.connected){send({type:'disconnect'});return}
+  const s=document.getElementById('serverInput').value.trim(),r=document.getElementById('roomInput').value.trim();
+  const p=document.getElementById('pwdInput').value;
+  const role=document.getElementById('modeHost').classList.contains('active')?'host':'viewer';
+  if(!s||!r)return notify('输入服务器和房间号');
+  state.role=role;
+  send({type:'connect',server:s,room:r,password:p,role});
 }
 
-// ============== Mouse / Keyboard ==============
-state.canvas.addEventListener('mousedown', e => {
-  if (!state.connected || state.role !== 'viewer') return;
-  const {x,y} = canvasToRemote(e);
-  sendLocal({type:'input', event:'click', data:{x,y,button:['left','middle','right'][e.button]||'left'}});
+// Mouse/Keyboard
+state.canvas.addEventListener('mousedown',e=>{
+  if(!state.connected||state.role!=='viewer')return;
+  const p=mapPos(e);send({type:'input',event:'click',data:{x:p.x,y:p.y,button:['left','middle','right'][e.button]||'left'}});
 });
-state.canvas.addEventListener('mousemove', e => {
-  if (!state.connected || state.role !== 'viewer') return;
-  const now = Date.now();
-  if (now - state.lastMouseSend < 50) return;
-  state.lastMouseSend = now;
-  const {x,y} = canvasToRemote(e);
-  sendLocal({type:'input', event:'mousemove', data:{x,y}});
+state.canvas.addEventListener('mousemove',e=>{
+  if(!state.connected||state.role!=='viewer')return;
+  const n=Date.now();if(n-state.lms<50)return;state.lms=n;
+  const p=mapPos(e);send({type:'input',event:'mousemove',data:{x:p.x,y:p.y}});
 });
-state.canvas.addEventListener('wheel', e => {
-  if (!state.connected || state.role !== 'viewer') return;
-  const {x,y} = canvasToRemote(e);
-  sendLocal({type:'input', event:'scroll', data:{x,y,amount:Math.sign(e.deltaY)}});
+state.canvas.addEventListener('wheel',e=>{
+  if(!state.connected||state.role!=='viewer')return;
+  const p=mapPos(e);send({type:'input',event:'scroll',data:{x:p.x,y:p.y,amount:Math.sign(e.deltaY)}});
   e.preventDefault();
-}, {passive:false});
-document.addEventListener('keydown', e => {
-  if (!state.connected || state.role !== 'viewer') return;
-  if (e.ctrlKey && e.altKey) {
-    if (e.key === 'q' || e.key === 'Q') { toggleFullscreen(); return; }
-    if (e.key === 'x' || e.key === 'X') { toggleConnection(); return; }
-  }
-  const key = mapKey(e.key);
-  if (key) sendLocal({type:'input', event:'keypress', data:{key}});
+},{passive:false});
+document.addEventListener('keydown',e=>{
+  if(!state.connected||state.role!=='viewer')return;
+  if(e.ctrlKey&&e.altKey){if(e.key==='q'||e.key==='Q')return toggleFS();if(e.key==='x'||e.key==='X')return toggleConn()}
+  const k=mapKey(e.key);if(k)send({type:'input',event:'keypress',data:{key:k}});
 });
 
-function canvasToRemote(e) {
-  const rect = state.canvas.getBoundingClientRect();
-  const cx = e.clientX - rect.left, cy = e.clientY - rect.top;
-  // Map through the displayed image area
-  const mode = document.getElementById('scaleMode').value;
-  const pw = rect.width, ph = rect.height;
-  let dw = state.remoteW, dh = state.remoteH;
-  if (mode === '等比') {
-    const r = Math.min(pw/dw, ph/dh);
-    dw *= r; dh *= r;
-  } else if (mode === '原始') { /* no scale */ }
-  else if (mode === '适应宽度') { dh = state.remoteH * pw / state.remoteW; dw = pw; }
-  else { dw = pw; dh = ph; }
-  const ox = (pw - dw) / 2, oy = (ph - dh) / 2;
-  const rx = Math.round((cx - ox) / dw * state.remoteW);
-  const ry = Math.round((cy - oy) / dh * state.remoteH);
-  return {x: Math.max(0,rx), y: Math.max(0,ry)};
+function mapPos(e){
+  const r=state.canvas.getBoundingClientRect(),cx=e.clientX-r.left,cy=e.clientY-r.top;
+  const pw=r.width,ph=r.height,mode=document.getElementById('scaleMode').value;
+  let dw=state.remoteW,dh=state.remoteH;
+  if(mode==='等比'){const r2=Math.min(pw/dw,ph/dh);dw*=r2;dh*=r2}
+  else if(mode==='适应宽度'){dh=state.remoteH*pw/state.remoteW;dw=pw}
+  else if(mode!=='原始'){dw=pw;dh=ph}
+  const ox=(pw-dw)/2,oy=(ph-dh)/2;
+  return{x:Math.max(0,Math.round((cx-ox)/dw*state.remoteW)),y:Math.max(0,Math.round((cy-oy)/dh*state.remoteH))};
 }
-
-function mapKey(key) {
-  const m = {'Enter':'enter','Tab':'tab','Escape':'escape','Backspace':'backspace',
+function mapKey(k){
+  const m={'Enter':'enter','Tab':'tab','Escape':'escape','Backspace':'backspace',
     'ArrowUp':'up','ArrowDown':'down','ArrowLeft':'left','ArrowRight':'right',
     'Delete':'delete','Home':'home','End':'end','PageUp':'pageup','PageDown':'pagedown',
     'Control':'ctrl','Alt':'alt','Shift':'shift','CapsLock':'capslock',' ':'space'};
-  return m[key] || (key.length === 1 ? key : '');
+  return m[k]||(k.length===1?k:'');
 }
 
-// ============== UI Events ==============
-document.getElementById('connectBtn').addEventListener('click', toggleConnection);
-document.getElementById('modeViewer').addEventListener('click', () => setMode('viewer'));
-document.getElementById('modeHost').addEventListener('click', () => setMode('host'));
+// UI Events
+document.getElementById('connectBtn').addEventListener('click',toggleConn);
+document.getElementById('modeViewer').addEventListener('click',()=>setMode('viewer'));
+document.getElementById('modeHost').addEventListener('click',()=>setMode('host'));
+document.getElementById('tbDisconnect').addEventListener('click',toggleConn);
+document.getElementById('tbFullscreen').addEventListener('click',toggleFS);
+document.getElementById('fullscreenBtn').addEventListener('click',toggleFS);
 
-function setMode(m) {
-  document.querySelectorAll('#modeToggle button').forEach(b => b.classList.remove('active'));
-  document.getElementById(m === 'viewer' ? 'modeViewer' : 'modeHost').classList.add('active');
-  if (state.connected && state.role !== m) toggleConnection();
+function setMode(m){
+  document.querySelectorAll('#modeToggle button').forEach(b=>b.classList.remove('active'));
+  document.getElementById(m==='viewer'?'modeViewer':'modeHost').classList.add('active');
+  if(state.connected&&state.role!==m)toggleConn();
 }
 
 // Presets
-document.querySelectorAll('#presetPills button').forEach(b => {
-  b.addEventListener('click', () => {
-    document.querySelectorAll('#presetPills button').forEach(x => x.classList.remove('active'));
+document.querySelectorAll('#presetPills button').forEach(b=>{
+  b.addEventListener('click',()=>{
+    document.querySelectorAll('#presetPills button').forEach(x=>x.classList.remove('active'));
     b.classList.add('active');
-    const d = JSON.parse(b.dataset.json);
-    document.getElementById('qualitySlider').value = d.q;
-    document.getElementById('qualityVal').textContent = d.q;
-    document.getElementById('fpsInput').value = d.f;
-    document.getElementById('scaleSelect').value = d.s + '%';
+    document.getElementById('qualitySlider').value=b.dataset.q;
+    document.getElementById('qualityVal').textContent=b.dataset.q;
+    document.getElementById('fpsInput').value=b.dataset.f;
+    document.getElementById('scaleSelect').value=b.dataset.s+'%';
+    syncHost();
   });
 });
+document.getElementById('qualitySlider').addEventListener('input',e=>{
+  document.getElementById('qualityVal').textContent=e.target.value;
+  document.querySelectorAll('#presetPills button').forEach(x=>x.classList.remove('active'));
+});
+document.getElementById('qualitySlider').addEventListener('change',syncHost);
+document.getElementById('fpsInput').addEventListener('change',syncHost);
+document.getElementById('scaleSelect').addEventListener('change',syncHost);
+document.getElementById('monitorInput').addEventListener('change',syncHost);
 
-document.getElementById('qualitySlider').addEventListener('input', e => {
-  document.getElementById('qualityVal').textContent = e.target.value;
-  document.querySelectorAll('#presetPills button').forEach(x => x.classList.remove('active'));
+function syncHost(){
+  if(state.role!=='host')return;
+  send({type:'host_settings',quality:+document.getElementById('qualitySlider').value,
+    fps:+document.getElementById('fpsInput').value,
+    scale:+document.getElementById('scaleSelect').value/100,
+    monitor:+document.getElementById('monitorInput').value||1,
+    privacy:document.getElementById('privacyToggle').style.color==='var(--primary)'});
+}
+
+document.getElementById('privacyToggle').addEventListener('click',function(){
+  this.style.color=this.style.color==='var(--primary)'?'var(--text3)':'var(--primary)';
+  syncHost();
 });
 
-// Quality slider from host to local
-function syncHostSettings() {
-  if (state.role !== 'host') return;
-  const q = parseInt(document.getElementById('qualitySlider').value);
-  const f = parseInt(document.getElementById('fpsInput').value);
-  const s = parseInt(document.getElementById('scaleSelect').value);
-  const m = parseInt(document.querySelector('#sidebar input[type=number]').value) || 1;
-  const p = document.getElementById('privacyToggle').classList.contains('active');
-  sendLocal({type:'host_settings', quality:q, fps:f, scale:s/100, monitor:m, privacy:p});
+// FS
+function toggleFS(){
+  if(!document.fullscreenElement){document.getElementById('main').requestFullscreen();document.getElementById('toolbar').style.display='none'}
+  else{document.exitFullscreen();if(state.connected)document.getElementById('toolbar').style.display='flex'}
 }
-document.getElementById('qualitySlider').addEventListener('change', syncHostSettings);
-document.getElementById('fpsInput').addEventListener('change', syncHostSettings);
-document.getElementById('scaleSelect').addEventListener('change', syncHostSettings);
-
-// Privacy toggle
-document.getElementById('privacyToggle').addEventListener('click', () => {
-  document.getElementById('privacyToggle').classList.toggle('active');
-  syncHostSettings();
+document.addEventListener('fullscreenchange',()=>{
+  if(!document.fullscreenElement&&state.connected)document.getElementById('toolbar').style.display='flex';
 });
-
-// Fullscreen
-document.getElementById('fullscreenBtn').addEventListener('click', toggleFullscreen);
-document.getElementById('tbFullscreen').addEventListener('click', toggleFullscreen);
-function toggleFullscreen() {
-  if (!document.fullscreenElement) {
-    document.getElementById('main').requestFullscreen();
-    document.getElementById('fullscreenBtn').textContent = '✕ 退出全屏';
-    document.getElementById('toolbar').style.display = 'none';
-  } else {
-    document.exitFullscreen();
-    document.getElementById('fullscreenBtn').textContent = '⛶ 全屏';
-    if (state.connected) document.getElementById('toolbar').style.display = 'flex';
-  }
-}
 
 // Chat
-document.getElementById('chatBtn').addEventListener('click', () => toggleChat());
-document.getElementById('tbChat').addEventListener('click', () => toggleChat());
-document.getElementById('chatSend').addEventListener('click', sendChat);
-document.getElementById('chatInput').addEventListener('keydown', e => { if (e.key === 'Enter') sendChat(); });
+document.getElementById('chatBtn').addEventListener('click',()=>toggleChat());
+document.getElementById('tbChat').addEventListener('click',()=>toggleChat());
+document.getElementById('chatSend').addEventListener('click',()=>sendChat());
+document.getElementById('chatInput').addEventListener('keydown',e=>{if(e.key==='Enter')sendChat()});
 
-function toggleChat() {
-  state.chatVisible = !state.chatVisible;
-  document.getElementById('chatPanel').style.display = state.chatVisible ? 'flex' : 'none';
-  document.getElementById('chatBtn').textContent = state.chatVisible ? '✕ 聊天' : '💬 聊天';
+function toggleChat(){
+  state.chatVisible=!state.chatVisible;
+  document.getElementById('chatPanel').style.display=state.chatVisible?'flex':'none';
+  document.getElementById('chatBtn').textContent=state.chatVisible?'✕ 聊天':'💬 聊天';
 }
-
-function sendChat() {
-  const input = document.getElementById('chatInput');
-  const text = input.value.trim();
-  if (!text || !state.connected) return;
-  const target = state.role === 'viewer' ? 'host' : 'all';
-  sendLocal({type:'chat', text, target});
-  addChat('我', text);
-  input.value = '';
+function sendChat(){
+  const i=document.getElementById('chatInput'),t=i.value.trim();
+  if(!t||!state.connected)return;
+  send({type:'chat',text:t,target:state.role==='viewer'?'host':'all'});
+  addChat('我',t);i.value='';
 }
-
-function addChat(name, text) {
-  const msgs = document.getElementById('chatMessages');
-  const d = document.createElement('div');
-  d.className = 'chat-msg';
-  const color = name === '我' ? '#4CAF50' : '#2196F3';
-  d.innerHTML = `<span class="name" style="color:${color}">${name}:</span> ${escapeHtml(text)}`;
-  msgs.appendChild(d);
-  msgs.scrollTop = msgs.scrollHeight;
+function addChat(n,t){
+  const m=document.getElementById('chatMessages'),d=document.createElement('div');
+  d.className='cm';d.innerHTML='<span class="n" style="color:'+(n==='我'?'var(--success)':'var(--primary)')+'">'+esc(n)+':</span> '+esc(t);
+  m.appendChild(d);m.scrollTop=m.scrollHeight;
 }
-
-function escapeHtml(t) { return t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function esc(t){return t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
 
 // File
-document.getElementById('fileBtn').addEventListener('click', () => {
-  if (!state.connected) return notify('请先连接');
-  sendLocal({type:'pick_file'});
-});
-document.getElementById('tbFile').addEventListener('click', () => document.getElementById('fileBtn').click());
+document.getElementById('fileBtn').addEventListener('click',()=>{if(state.connected)send({type:'pick_file'});else notify('先连接')});
+document.getElementById('tbFile').addEventListener('click',()=>document.getElementById('fileBtn').click());
 
-// Toolbar buttons
-document.getElementById('tbDisconnect').addEventListener('click', toggleConnection);
-document.getElementById('tbRefresh').addEventListener('click', () => {
-  if (state.connected) notify('已刷新');
-});
-
-// Notifications
-function notify(text) {
-  const n = document.createElement('div');
-  n.className = 'notif'; n.textContent = text;
-  document.body.appendChild(n);
-  setTimeout(() => { n.style.opacity='0'; n.style.transition='opacity .3s'; setTimeout(() => n.remove(),300); }, 3000);
+function notify(t){
+  const n=document.createElement('div');n.className='notif';n.textContent=t;
+  document.body.appendChild(n);setTimeout(()=>{n.style.opacity='0';n.style.transition='opacity .3s';setTimeout(()=>n.remove(),300)},2500);
 }
-
-// Init
 connectLocal();
-
-// Canvas resize handler
-window.addEventListener('resize', () => {
-  if (state.connected) {
-    state.canvas.style.display = 'none';
-    state.canvas.style.display = 'block';
-  }
-});
+window.addEventListener('resize',()=>{if(state.connected){state.canvas.style.display='none';state.canvas.style.display='block'}});
 </script>
 </body>
-</html>
-"""
+</html>"""
 
-# =========================================================================
+# =====================================================================
 # Python Backend
-# =========================================================================
+# =====================================================================
 
-class ClientBackend:
-    """Python backend: Web UI server + native screen capture + input simulation"""
-
+class Backend:
     def __init__(self):
-        self.relay_ws = None
+        self.relay = None
         self.role = "viewer"
         self.connected = False
-        self._host_quality = 45
-        self._host_fps = 12
-        self._host_scale = 0.5
-        self._host_monitor = 1
+        self._q = 45
+        self._fps2 = 12
+        self._scale = 0.5
+        self._mon = 1
         self._privacy = False
         self._running = True
-        self._capture_task = None
-        self._browser_ws = set()
+        self._capture = None
+        self._browsers = set()
 
-    # ---------- aiohttp server ----------
-
-    async def start(self, port: int = 8887):
+    async def start(self, port=8887):
         app = web.Application()
-        app.router.add_get("/", self._serve_html)
-        app.router.add_get("/ws", self._browser_ws_handler)
+        app.router.add_get("/", lambda r: web.Response(text=HTML, content_type="text/html"))
+        app.router.add_get("/ws", self._ws_handler)
         runner = web.AppRunner(app)
         await runner.setup()
-        site = web.TCPSite(runner, "127.0.0.1", port)
-        await site.start()
-        log.info(f"Web UI: http://127.0.0.1:{port}")
+        await web.TCPSite(runner, "127.0.0.1", port).start()
+        log.info(f"http://127.0.0.1:{port}")
         webbrowser.open(f"http://127.0.0.1:{port}")
-
-        # Keep running
         while self._running:
             await asyncio.sleep(1)
 
     def stop(self):
         self._running = False
-        self._disconnect_relay()
+        self._disc()
 
-    async def _serve_html(self, request):
-        return web.Response(text=WEB_UI, content_type="text/html")
-
-    # ---------- Browser WebSocket ----------
-
-    async def _browser_ws_handler(self, request):
+    # Browser WS
+    async def _ws_handler(self, request):
         ws = web.WebSocketResponse()
         await ws.prepare(request)
-        self._browser_ws.add(ws)
-        log.info("浏览器已连接")
-
+        self._browsers.add(ws)
+        log.info("browser connected")
         async for msg in ws:
             if msg.type == aiohttp.WSMsgType.TEXT:
                 try:
-                    data = json.loads(msg.data)
-                    await self._handle_browser_msg(data, ws)
-                except Exception as e:
-                    log.error(f"浏览器消息错误: {e}")
+                    await self._bmsg(json.loads(msg.data), ws)
+                except: pass
             elif msg.type == aiohttp.WSMsgType.ERROR:
                 break
-
-        self._browser_ws.discard(ws)
-        if not self._browser_ws:
-            self._disconnect_relay()
-        log.info("浏览器断开")
-
+        self._browsers.discard(ws)
+        if not self._browsers:
+            self._disc()
         return ws
 
-    async def _send_browser(self, data: dict):
-        """发送消息到所有浏览器"""
-        for ws in list(self._browser_ws):
-            try:
-                await ws.send_json(data)
-            except:
-                self._browser_ws.discard(ws)
+    async def _bcast(self, data):
+        for ws in list(self._browsers):
+            try: await ws.send_json(data)
+            except: self._browsers.discard(ws)
 
-    async def _handle_browser_msg(self, msg: dict, ws):
-        """处理来自浏览器的消息"""
+    async def _bmsg(self, msg, ws):
         t = msg.get("type")
-
         if t == "connect":
-            self.role = msg.get("role", "viewer")
-            asyncio.ensure_future(self._connect_relay(
+            self.role = msg.get("role")
+            asyncio.ensure_future(self._relay_connect(
                 msg.get("server"), msg.get("room"),
-                msg.get("password", ""), msg.get("role"),
-            ))
-
+                msg.get("password", ""), msg.get("role")))
         elif t == "disconnect":
-            self._disconnect_relay()
-            await self._send_browser({"type": "disconnected"})
-
-        elif t == "input":
-            # Forward to relay server -> host
-            if self.relay_ws and self.connected and self.role == "viewer":
-                await self.relay_ws.send_json({
-                    "type": "input",
-                    "event": msg.get("event"),
-                    "data": msg.get("data"),
-                })
-
-        elif t == "chat":
-            if self.relay_ws and self.connected:
-                await self.relay_ws.send_json({
-                    "type": "chat",
-                    "text": msg.get("text", ""),
-                    "target": msg.get("target", "all"),
-                })
-
+            self._disc()
+            await self._bcast({"type": "disconnected"})
+        elif t == "input" and self.relay and self.connected:
+            await self.relay.send_json({
+                "type": "input", "event": msg.get("event"),
+                "data": msg.get("data")})
+        elif t == "chat" and self.relay and self.connected:
+            await self.relay.send_json({
+                "type": "chat", "text": msg.get("text"),
+                "target": msg.get("target")})
         elif t == "host_settings":
-            self._host_quality = msg.get("quality", 45)
-            self._host_fps = msg.get("fps", 12)
-            self._host_scale = msg.get("scale", 0.5)
-            self._host_monitor = msg.get("monitor", 1)
+            self._q = msg.get("quality", 45)
+            self._fps2 = msg.get("fps", 12)
+            self._scale = msg.get("scale", 0.5)
+            self._mon = msg.get("monitor", 1)
             self._privacy = msg.get("privacy", False)
 
-        elif t == "pick_file":
-            # Can't open file dialog from async context easily
-            await self._send_browser({"type": "notify", "text": "文件传输: 请在 Python 端实现"})
-
-    # ---------- Relay WebSocket ----------
-
-    async def _connect_relay(self, server: str, room: str, password: str, role: str):
-        """连接到中继服务器"""
-        self._disconnect_relay()
+    # Relay
+    async def _relay_connect(self, server, room, password, role):
+        self._disc()
         try:
-            async with aiohttp.ClientSession() as session:
-                # Convert ws:// to http:// for aiohttp
-                url = server.replace("ws://", "http://").replace("wss://", "https://")
-                async with session.ws_connect(url, autoclose=False, autoping=True) as ws:
-                    self.relay_ws = ws
-                    self.connected = True
-                    await self._send_browser({"type": "connected"})
-
-                    # Register
+            url = server.replace("ws://", "http://").replace("wss://", "https://")
+            async with aiohttp.ClientSession() as sess:
+                async with sess.ws_connect(url, autoclose=False, autoping=True) as ws:
+                    self.relay = ws; self.connected = True
+                    await self._bcast({"type": "connected"})
                     reg = {"type": "register", "role": role, "room": room}
-                    if password:
-                        reg["password"] = password
+                    if password: reg["password"] = password
                     await ws.send_json(reg)
-
-                    # Start capture if host
                     if role == "host":
-                        self._capture_task = asyncio.ensure_future(self._capture_loop())
-
-                    # Message loop
-                    async for msg in ws:
-                        if msg.type == aiohttp.WSMsgType.TEXT:
-                            try:
-                                data = json.loads(msg.data)
-                                await self._handle_relay_msg(data)
-                            except:
-                                pass
-                        elif msg.type == aiohttp.WSMsgType.CLOSE:
-                            break
-
+                        self._capture = asyncio.ensure_future(self._cap_loop())
+                    async for m in ws:
+                        if m.type == aiohttp.WSMsgType.TEXT:
+                            try: await self._relay_msg(json.loads(m.data))
+                            except: pass
+                        elif m.type == aiohttp.WSMsgType.CLOSE: break
         except Exception as e:
-            log.error(f"中继连接失败: {e}")
-            await self._send_browser({"type": "notify", "text": f"连接失败: {e}"})
-
+            log.error(f"relay error: {e}")
+            await self._bcast({"type": "notify", "text": f"失败: {e}"})
         self.connected = False
-        if self._capture_task:
-            self._capture_task.cancel()
-            self._capture_task = None
-        self.relay_ws = None
-        await self._send_browser({"type": "disconnected"})
+        if self._capture: self._capture.cancel(); self._capture = None
+        self.relay = None
+        await self._bcast({"type": "disconnected"})
 
-    def _disconnect_relay(self):
-        if self.relay_ws:
-            asyncio.ensure_future(self.relay_ws.close())
-            self.relay_ws = None
+    def _disc(self):
+        if self.relay:
+            asyncio.ensure_future(self.relay.close())
+            self.relay = None
         self.connected = False
-        if self._capture_task:
-            self._capture_task.cancel()
-            self._capture_task = None
+        if self._capture: self._capture.cancel(); self._capture = None
 
-    async def _handle_relay_msg(self, msg: dict):
+    async def _relay_msg(self, msg):
         t = msg.get("type")
-
         if t == "frame":
-            # Forward to browser
-            await self._send_browser({
-                "type": "frame",
-                "data": msg.get("data"),
-                "timestamp": msg.get("timestamp"),
-            })
-
+            await self._bcast({"type": "frame", "data": msg.get("data")})
         elif t == "chat":
-            await self._send_browser({
-                "type": "chat",
-                "text": msg.get("text"),
-                "name": msg.get("name", "远程"),
-            })
-
+            await self._bcast({"type": "chat", "text": msg.get("text"), "name": msg.get("name","?")})
         elif t == "input":
-            # Remote input on this machine (we are host)
-            event = msg.get("event")
-            data = msg.get("data", {})
-            self._handle_input(event, data)
-
-        elif t == "clipboard":
-            text = msg.get("text", "")
-            if text:
-                try:
-                    import pyperclip
-                    pyperclip.copy(text)
-                except:
-                    pass
-
+            self._handle_input(msg.get("event"), msg.get("data", {}))
         elif t == "error":
-            await self._send_browser({"type": "notify", "text": f"错误: {msg.get('msg')}"})
-
+            await self._bcast({"type": "notify", "text": msg.get("msg")})
         elif t == "host_left":
-            await self._send_browser({"type": "notify", "text": "主机已断开"})
-            self._disconnect_relay()
+            await self._bcast({"type": "notify", "text": "host disconnected"})
+            self._disc()
 
-    # ---------- Screen Capture (Host mode) ----------
-
-    async def _capture_loop(self):
-        """定时捕获屏幕并发送到中继"""
-        if not mss or not Image:
-            log.error("缺少 mss/Pillow")
-            return
-
+    async def _cap_loop(self):
+        if not mss or not Image: return
         while self.connected:
             try:
-                start = time.time()
-                interval = 1.0 / max(self._host_fps, 1)
-
+                s = time.time(); iv = 1.0 / max(self._fps2, 1)
                 if self._privacy:
-                    pil = Image.new("RGB", (640, 360), (20, 20, 30))
+                    pil = Image.new("RGB", (640, 360), (28, 28, 30))
                 else:
                     with mss.mss() as sct:
-                        mon = sct.monitors[min(self._host_monitor, len(sct.monitors) - 1)]
-                        img = sct.grab(mon)
-                        pil = Image.frombytes("RGB", img.size, img.rgb)
-                        if self._host_scale < 1.0:
-                            w, h = pil.size
-                            pil = pil.resize((int(w * self._host_scale), int(h * self._host_scale)),
-                                            Image.LANCZOS)
-
+                        mon = sct.monitors[min(self._mon, len(sct.monitors)-1)]
+                        im = sct.grab(mon)
+                        pil = Image.frombytes("RGB", im.size, im.rgb)
+                        if self._scale < 1.0:
+                            pil = pil.resize((int(pil.width*self._scale), int(pil.height*self._scale)), Image.LANCZOS)
                 buf = io.BytesIO()
-                pil.save(buf, format="JPEG", quality=self._host_quality, optimize=True)
-                b64 = base64.b64encode(buf.getvalue()).decode()
+                pil.save(buf, format="JPEG", quality=self._q, optimize=True)
+                if self.relay and self.connected:
+                    await self.relay.send_json({"type": "frame", "data": base64.b64encode(buf.getvalue()).decode(),
+                        "timestamp": int(time.time()*1000)})
+                await asyncio.sleep(max(0, iv - (time.time()-s)))
+            except asyncio.CancelledError: break
+            except Exception as e: log.error(f"capture: {e}"); await asyncio.sleep(1)
 
-                if self.relay_ws and self.connected:
-                    await self.relay_ws.send_json({
-                        "type": "frame", "data": b64,
-                        "timestamp": int(time.time() * 1000),
-                    })
-
-                elapsed = time.time() - start
-                await asyncio.sleep(max(0, interval - elapsed))
-
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                log.error(f"捕获错误: {e}")
-                await asyncio.sleep(1)
-
-    # ---------- Input Simulation (Host mode) ----------
-
-    def _handle_input(self, event: str, data: dict):
-        if not pyautogui:
-            return
+    def _handle_input(self, event, data):
+        if not pyautogui: return
         try:
             if event == "click":
-                pyautogui.click(x=data["x"], y=data["y"], button=data.get("button", "left"))
+                pyautogui.click(x=data["x"], y=data["y"], button=data.get("button","left"))
             elif event == "mousemove":
                 pyautogui.moveTo(data["x"], data["y"])
-            elif event == "mousedown":
-                pyautogui.mouseDown(x=data["x"], y=data["y"], button=data.get("button", "left"))
-            elif event == "mouseup":
-                pyautogui.mouseUp(x=data["x"], y=data["y"], button=data.get("button", "left"))
             elif event == "scroll":
-                pyautogui.scroll(data.get("amount", 1), x=data["x"], y=data["y"])
+                pyautogui.scroll(data.get("amount",1), x=data["x"], y=data["y"])
             elif event == "keypress" and Controller:
-                kb = Controller()
-                key = data.get("key", "")
-                special = {"enter":Key.enter, "return":Key.enter, "tab":Key.tab,
-                    "escape":Key.esc, "esc":Key.esc, "backspace":Key.backspace,
-                    "space":Key.space, "ctrl":Key.ctrl, "alt":Key.alt, "shift":Key.shift,
-                    "up":Key.up, "down":Key.down, "left":Key.left, "right":Key.right,
-                    "delete":Key.delete, "home":Key.home, "end":Key.end,
-                    "pageup":Key.page_up, "pagedown":Key.page_down}
-                if len(key) == 1:
-                    kb.press(key); kb.release(key)
-                elif key.lower() in special:
-                    kb.press(special[key.lower()]); kb.release(special[key.lower()])
-        except Exception as e:
-            log.error(f"输入处理: {e}")
-
-
-# =========================================================================
-# Main
-# =========================================================================
-
-def main():
-    port = 8887
-
-    backend = ClientBackend()
-
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-
-    try:
-        loop.run_until_complete(backend.start(port))
-    except KeyboardInterrupt:
-        pass
-    finally:
-        backend.stop()
-        loop.close()
-
-    print("客户端已退出")
+                kb = Controller(); key = data.get("key","")
+                sp = {"enter":Key.enter,"return":Key.enter,"tab":Key.tab,"escape":Key.esc,
+                    "esc":Key.esc,"backspace":Key.backspace,"space":Key.space,"ctrl":Key.ctrl,
+                    "alt":Key.alt,"shift":Key.shift,"up":Key.up,"down":Key.down,
+                    "left":Key.left,"right":Key.right,"delete":Key.delete,"home":Key.home,"end":Key.end,
+                    "pageup":Key.page_up,"pagedown":Key.page_down}
+                if len(key)==1: kb.press(key); kb.release(key)
+                elif key.lower() in sp: kb.press(sp[key.lower()]); kb.release(sp[key.lower()])
+        except Exception as e: log.error(f"input: {e}")
 
 
 if __name__ == "__main__":
-    main()
+    b = Backend()
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try: loop.run_until_complete(b.start(8887))
+    except KeyboardInterrupt: pass
+    finally: b.stop(); loop.close()
