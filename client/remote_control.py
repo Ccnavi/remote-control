@@ -173,12 +173,14 @@ class ScreenCaptureThread(QThread):
         self.fps = 15
         self.monitor = 1
         self.scale_factor = 0.5  # 默认 50%
+        self.privacy_mode = False
 
     def start_capture(self, quality=60, fps=15, monitor=1, scale_factor=0.5):
         self.quality = quality
         self.fps = fps
         self.monitor = monitor
         self.scale_factor = scale_factor
+        self.privacy_mode = False
         self.running = True
         self.start()
 
@@ -195,9 +197,16 @@ class ScreenCaptureThread(QThread):
             while self.running:
                 try:
                     start = time.time()
-                    monitor = sct.monitors[self.monitor]
-                    img = sct.grab(monitor)
-                    pil_img = Image.frombytes("RGB", img.size, img.rgb)
+                    if self.privacy_mode:
+                        # 隐私屏：发送黑屏 + 文字
+                        pil_img = Image.new("RGB", (640, 360), (20, 20, 30))
+                        from PIL import ImageDraw, ImageFont
+                        draw = ImageDraw.Draw(pil_img)
+                        draw.text((160, 160), "🔒 隐私屏已开启\n正在被远程控制", fill=(100, 100, 120))
+                    else:
+                        monitor = sct.monitors[self.monitor]
+                        img = sct.grab(monitor)
+                        pil_img = Image.frombytes("RGB", img.size, img.rgb)
 
                     # 缩放
                     if self.scale_factor < 1.0:
@@ -261,8 +270,9 @@ class RemoteControlApp(QMainWindow):
         self.status_timer.timeout.connect(self._update_status_bar)
         self.status_timer.start(2000)
 
-        # 连接状态防抖
+        # 连接信号
         self._pending_connection = False
+        self.privacy_check.toggled.connect(self._toggle_privacy)
 
     # ---------- UI 构建 ----------
 
@@ -399,8 +409,46 @@ class RemoteControlApp(QMainWindow):
         m_layout.addWidget(self.monitor_spin)
         host_layout.addLayout(m_layout)
 
+        # 隐私屏
+        self.privacy_check = QCheckBox("🛡 隐私屏（被控时黑屏）")
+        self.privacy_check.setStyleSheet("color:#f44336; font-weight:bold;")
+        host_layout.addWidget(self.privacy_check)
+
+        # 显示被控端分辨率
+        self.host_res_label = QLabel("远程分辨率: -")
+        self.host_res_label.setStyleSheet("color:#888; font-size:11px;")
+        host_layout.addWidget(self.host_res_label)
+
         host_group.setEnabled(False)
         left_layout.addWidget(host_group)
+
+        # ====== 主控端设置 ======
+        viewer_group = QGroupBox("主控端设置")
+        viewer_layout = QVBoxLayout(viewer_group)
+        viewer_layout.setSpacing(6)
+
+        # 缩放模式
+        z_layout = QHBoxLayout()
+        z_layout.addWidget(QLabel("缩放模式:"))
+        self.scale_mode = QComboBox()
+        self.scale_mode.addItems(["等比缩放", "拉伸填充", "原始大小", "适应宽度"])
+        self.scale_mode.setCurrentIndex(0)
+        z_layout.addWidget(self.scale_mode)
+        viewer_layout.addLayout(z_layout)
+
+        # 全屏按钮
+        self.fullscreen_btn = QPushButton("⛶ 全屏")
+        self.fullscreen_btn.setStyleSheet("background:#2196F3; color:white;")
+        self.fullscreen_btn.clicked.connect(self._toggle_fullscreen)
+        viewer_layout.addWidget(self.fullscreen_btn)
+
+        # 显示信息
+        self.viewer_info = QLabel("分辨率: -\n帧率: -\n延迟: -")
+        self.viewer_info.setStyleSheet("color:#888; font-size:11px;")
+        viewer_layout.addWidget(self.viewer_info)
+
+        viewer_group.setEnabled(False)
+        left_layout.addWidget(viewer_group)
 
         # ====== 快捷键 ======
         tip_group = QGroupBox("快捷键")
@@ -474,15 +522,25 @@ class RemoteControlApp(QMainWindow):
         self.preset_label.setText(f"当前: {name}")
         self.preset_label.setStyleSheet(f"color:{color}; font-weight:bold;")
 
+    def _toggle_fullscreen(self):
+        """切换全屏"""
+        if self.isFullScreen():
+            self.showNormal()
+            self.fullscreen_btn.setText("⛶ 全屏")
+        else:
+            self.showFullScreen()
+            self.fullscreen_btn.setText("✕ 退出全屏")
+
     def _on_mode_changed(self):
         """模式切换"""
         is_host = self.mode_host.isChecked()
-        self.findChild(QGroupBox, "").setEnabled(is_host)
-        # 找到 host_group（第二个 QGroupBox）
+        is_viewer = self.mode_viewer.isChecked()
+
         for w in self.findChildren(QGroupBox):
             if w.title() == "被控端设置":
                 w.setEnabled(is_host)
-                break
+            if w.title() == "主控端设置":
+                w.setEnabled(is_viewer)
 
         # 如果已连接则断开
         if self.connected:
@@ -633,13 +691,20 @@ class RemoteControlApp(QMainWindow):
 
     def _on_frame_captured(self, jpeg_bytes: bytes):
         """屏幕捕获完成（被控模式）"""
-        # 发送到服务器
         b64 = base64.b64encode(jpeg_bytes).decode()
         self.ws_thread.send({
             "type": "frame",
             "data": b64,
             "timestamp": int(time.time() * 1000),
         })
+
+    def _toggle_privacy(self, checked: bool):
+        """切换隐私屏"""
+        self.capture_thread.privacy_mode = checked
+        if checked:
+            self.status_label.setText("🛡 隐私屏已开启，远程画面已屏蔽")
+        else:
+            self.status_label.setText("🟢 隐私屏已关闭")
 
     def _handle_remote_input(self, event: str, data: dict):
         """处理远程输入事件"""
@@ -774,7 +839,7 @@ class RemoteControlApp(QMainWindow):
             self._frame_timer.stop()
 
     def _display_latest_frame(self):
-        """定时器拉取最新帧"""
+        """定时器拉取最新帧（支持缩放模式）"""
         if not self.latest_jpeg:
             return
         try:
@@ -785,19 +850,38 @@ class RemoteControlApp(QMainWindow):
 
             self.remote_resolution = (pixmap.width(), pixmap.height())
 
-            scaled = pixmap.scaled(
-                self.viewer_label.size(),
-                Qt.KeepAspectRatio,
-                Qt.SmoothTransformation,
-            )
+            mode = self.scale_mode.currentText() if hasattr(self, 'scale_mode') else "等比缩放"
+            label_size = self.viewer_label.size()
+
+            if mode == "原始大小":
+                scaled = pixmap
+            elif mode == "拉伸填充":
+                scaled = pixmap.scaled(label_size, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+            elif mode == "适应宽度":
+                w = label_size.width()
+                h = int(pixmap.height() * (w / pixmap.width()))
+                scaled = pixmap.scaled(w, h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+            else:  # 等比缩放
+                scaled = pixmap.scaled(label_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+
             self.viewer_label.setPixmap(scaled)
 
+            # FPS 统计
             self.frame_count += 1
             elapsed = time.time() - self.fps_timer_elapsed
             if elapsed >= 2:
                 self.current_fps = self.frame_count / elapsed
                 self.fps_timer_elapsed = time.time()
                 self.frame_count = 0
+
+            # 更新信息
+            if self.frame_count % 5 == 0:
+                rx, ry = self.remote_resolution
+                self.viewer_info.setText(
+                    f"分辨率: {rx}×{ry}\n"
+                    f"帧率: {self.current_fps:.1f} FPS\n"
+                    f"显示: {scaled.width()}×{scaled.height()}"
+                )
         except Exception:
             pass  # 窗口销毁时忽略
 
