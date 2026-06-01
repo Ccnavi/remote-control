@@ -61,6 +61,13 @@ APP_NAME = "RemoteControl"
 APP_VERSION = "1.0.0"
 DEFAULT_SERVER = "ws://47.92.148.99:8500"
 DEFAULT_ROOM = "default"
+DEFAULT_PASSWORD = ""
+
+# 自适应参数
+ADAPT_QUALITY_HIGH = 70
+ADAPT_QUALITY_MED = 40
+ADAPT_QUALITY_LOW = 20
+ADAPT_LATENCY_THRESHOLD = 0.15  # 150ms 帧延迟触发降质
 
 # ============================================================
 # 日志
@@ -88,10 +95,11 @@ class WebSocketThread(QThread):
         self._should_reconnect = False
         self._reconnect_delay = 3
 
-    def connect(self, server_url: str, room: str, role: str):
+    def connect(self, server_url: str, room: str, role: str, password: str = ""):
         self.server_url = server_url
         self.room = room
         self.role = role
+        self.password = password
         self._should_reconnect = True
         self.start()
 
@@ -141,11 +149,15 @@ class WebSocketThread(QThread):
         log.info(f"WebSocket 已连接: {self.server_url}")
         self.connection_changed.emit(True, f"已连接 ({self.role})")
         # 注册
-        self.send({
+        reg = {
             "type": "register",
             "role": self.role,
             "room": self.room,
-        })
+            "name": self.role,
+        }
+        if self.password:
+            reg["password"] = self.password
+        self.send(reg)
 
     def _on_message(self, ws, message):
         try:
@@ -172,8 +184,10 @@ class ScreenCaptureThread(QThread):
         self.quality = 60
         self.fps = 15
         self.monitor = 1
-        self.scale_factor = 0.5  # 默认 50%
+        self.scale_factor = 0.5
         self.privacy_mode = False
+        self.auto_adapt = True
+        self._send_times = []  # for latency tracking
 
     def start_capture(self, quality=60, fps=15, monitor=1, scale_factor=0.5):
         self.quality = quality
@@ -228,6 +242,24 @@ class ScreenCaptureThread(QThread):
                     log.error(f"屏幕捕获失败: {e}")
                     time.sleep(1)
 
+    def set_quality(self, quality: int):
+        """外部修改画质（用于自动适应）"""
+        self.quality = max(10, min(95, quality))
+
+    def add_send_time(self, t: float):
+        """记录发送时间戳用于延迟计算"""
+        self._send_times.append(t)
+        if len(self._send_times) > 30:
+            self._send_times.pop(0)
+
+    def get_avg_latency(self) -> float:
+        """获取平均发送延迟"""
+        if len(self._send_times) < 5:
+            return 0.0
+        now = time.time()
+        deltas = [now - t for t in self._send_times[-10:]]
+        return sum(deltas) / len(deltas)
+
 
 # ============================================================
 # 主窗口 UI
@@ -265,6 +297,9 @@ class RemoteControlApp(QMainWindow):
         # 构建 UI
         self._build_ui()
 
+        # 系统托盘
+        self._init_tray()
+
         # 定时器
         self.status_timer = QTimer()
         self.status_timer.timeout.connect(self._update_status_bar)
@@ -273,6 +308,35 @@ class RemoteControlApp(QMainWindow):
         # 连接信号
         self._pending_connection = False
         self.privacy_check.toggled.connect(self._toggle_privacy)
+
+    # ---------- 系统托盘 ----------
+
+    def _init_tray(self):
+        """初始化系统托盘"""
+        self.tray_icon = QSystemTrayIcon(self)
+        self.tray_icon.setToolTip("RemoteControl")
+        # 创建一个简单的图标（16x16 绿色）
+        icon_pm = QPixmap(16, 16)
+        icon_pm.fill(QColor("#4CAF50"))
+        self.tray_icon.setIcon(QIcon(icon_pm))
+
+        tray_menu = QMenu()
+        show_action = tray_menu.addAction("显示窗口")
+        show_action.triggered.connect(lambda: (self.showNormal(), self.activateWindow()))
+        self.tray_connect_action = tray_menu.addAction("📡 连接")
+        self.tray_connect_action.triggered.connect(self._toggle_connection)
+        tray_menu.addSeparator()
+        quit_action = tray_menu.addAction("退出")
+        quit_action.triggered.connect(self.close)
+        self.tray_icon.setContextMenu(tray_menu)
+        self.tray_icon.activated.connect(
+            lambda reason: self._on_tray_activated(reason))
+
+    def _on_tray_activated(self, reason):
+        if reason == QSystemTrayIcon.DoubleClick:
+            self.showNormal()
+            self.activateWindow()
+            self.tray_icon.hide()
 
     # ---------- UI 构建 ----------
 
@@ -322,6 +386,21 @@ class RemoteControlApp(QMainWindow):
         conn_layout.addWidget(QLabel("房间名:"))
         self.room_input = QLineEdit(DEFAULT_ROOM)
         conn_layout.addWidget(self.room_input)
+
+        # 连接密码
+        pwd_layout = QHBoxLayout()
+        self.password_input = QLineEdit()
+        self.password_input.setEchoMode(QLineEdit.Password)
+        self.password_input.setPlaceholderText("连接密码 (可选)")
+        pwd_layout.addWidget(self.password_input)
+        self.show_pwd_btn = QPushButton("👁")
+        self.show_pwd_btn.setFixedWidth(30)
+        self.show_pwd_btn.setStyleSheet("background:transparent; color:#888; padding:4px;")
+        self.show_pwd_btn.setCheckable(True)
+        self.show_pwd_btn.toggled.connect(
+            lambda c: self.password_input.setEchoMode(QLineEdit.Normal if c else QLineEdit.Password))
+        pwd_layout.addWidget(self.show_pwd_btn)
+        conn_layout.addLayout(pwd_layout)
 
         # 模式选择
         conn_layout.addWidget(QLabel("模式:"))
@@ -572,7 +651,8 @@ class RemoteControlApp(QMainWindow):
         self.connect_btn.setText("⏳ 连接中...")
         self._pending_connection = True
 
-        self.ws_thread.connect(server, room, self.current_role)
+        pwd = self.password_input.text()
+        self.ws_thread.connect(server, room, self.current_role, password=pwd)
 
     def connect_server(self):
         """外部调用连接"""
@@ -690,13 +770,31 @@ class RemoteControlApp(QMainWindow):
         self.latest_jpeg = jpeg_bytes
 
     def _on_frame_captured(self, jpeg_bytes: bytes):
-        """屏幕捕获完成（被控模式）"""
+        """屏幕捕获完成（被控模式）+ 自动适应"""
+        send_time = time.time()
+        self.capture_thread.add_send_time(send_time)
         b64 = base64.b64encode(jpeg_bytes).decode()
         self.ws_thread.send({
             "type": "frame",
             "data": b64,
-            "timestamp": int(time.time() * 1000),
+            "timestamp": int(send_time * 1000),
         })
+
+        # 自动适应画质
+        if self.capture_thread.auto_adapt:
+            latency = self.capture_thread.get_avg_latency()
+            if latency > 0.3:  # >300ms 延迟，降低画质
+                new_q = max(15, self.capture_thread.quality - 5)
+                if new_q != self.capture_thread.quality:
+                    self.capture_thread.set_quality(new_q)
+                    self.quality_slider.setValue(new_q)
+                    log.info(f"自动降质: {self.capture_thread.quality} -> {new_q} (延迟{latency:.2f}s)")
+            elif latency < 0.08 and self.capture_thread.quality < 60:  # <80ms 延迟，提升画质
+                new_q = min(70, self.capture_thread.quality + 3)
+                if new_q != self.capture_thread.quality:
+                    self.capture_thread.set_quality(new_q)
+                    self.quality_slider.setValue(new_q)
+                    log.info(f"自动提质: {self.capture_thread.quality} -> {new_q}")
 
     def _toggle_privacy(self, checked: bool):
         """切换隐私屏"""
@@ -909,6 +1007,14 @@ class RemoteControlApp(QMainWindow):
         self.disp_size = (event.size().width(), event.size().height())
 
     def closeEvent(self, event):
+        # 被控模式最小化到托盘
+        if self.current_role == "host" and self.connected:
+            event.ignore()
+            self.hide()
+            self.tray_icon.show()
+            self.tray_icon.showMessage("RemoteControl", "正在后台运行，双击恢复窗口",
+                                       QSystemTrayIcon.Information, 2000)
+            return
         self._stop_frame_timer()
         self.capture_thread.stop_capture()
         self.capture_thread.wait(1000)
