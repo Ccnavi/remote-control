@@ -1,1144 +1,625 @@
 #!/usr/bin/env python3
 """
-Remote Control v3.0 - ToDesk 风格远程桌面
-支持主控/被控双模式，文件传输，聊天，剪贴板同步
+RemoteControl - PyQt5 远程桌面客户端
+ToDesk 风格暗色主题 | 主控/被控一体
 """
 
-import sys
-import json
-import time
-import base64
-import threading
-import logging
-import io
-import os
-
+import sys, json, time, base64, io, os, logging, threading
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QLineEdit, QComboBox, QFrame,
     QTextEdit, QMessageBox, QSystemTrayIcon, QMenu, QAction,
-    QSlider, QCheckBox, QSpinBox, QRadioButton,
-    QStackedWidget, QScrollArea, QSizePolicy, QFileDialog,
+    QSlider, QCheckBox, QSpinBox, QFileDialog, QScrollArea,
 )
-from PyQt5.QtCore import (
-    Qt, QTimer, QThread, pyqtSignal, QSize, QPoint, QRect,
-)
-from PyQt5.QtGui import (
-    QPixmap, QImage, QIcon, QFont, QColor, QPalette,
-    QWheelEvent, QCursor, QPainter, QFontDatabase,
-)
+from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal
+from PyQt5.QtGui import QPixmap, QIcon, QColor, QPalette, QWheelEvent
 
-try:
-    import websocket
-except ImportError:
-    websocket = None
-try:
-    import mss
-except ImportError:
-    mss = None
-try:
-    from PIL import Image, ImageDraw, ImageFont
-except ImportError:
-    Image = None
-try:
-    import pyautogui
-except ImportError:
-    pyautogui = None
-try:
-    from pynput.keyboard import Controller, Key
-except ImportError:
-    Controller = None
-    Key = None
+try: import websocket
+except: websocket = None
+try: import mss
+except: mss = None
+try: from PIL import Image, ImageDraw
+except: Image = None
+try: import pyautogui
+except: pyautogui = None
+try: from pynput.keyboard import Controller, Key
+except: Controller = Key = None
 
-APP_NAME = "RemoteControl"
-APP_VERSION = "3.0.0"
-DEFAULT_SERVER = "ws://47.92.148.99:8500"
-DEFAULT_ROOM = "default"
-
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+APP_VER = "3.1.0"
+SERVER = "ws://47.92.148.99:8500"
 log = logging.getLogger("rc")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
-# ======================== 样式表 ========================
-
-DARK_STYLE = """
-QMainWindow { background: #1a1a2e; }
-QFrame#sidebar { background: #16213e; border-right: 1px solid #0f3460; }
-QFrame#section { background: #1a1a35; border-radius: 8px; border: 1px solid #2a2a4a; }
-QFrame#section:hover { border: 1px solid #3a3a5a; }
-QFrame#chatPanel { background: #16213e; border-left: 1px solid #0f3460; }
-QLabel { color: #c8c8d4; font-size: 12px; }
-QLabel#title { color: #e0e0ff; font-size: 16px; font-weight: bold; }
-QLabel#sectionTitle { color: #8888bb; font-size: 11px; font-weight: bold; letter-spacing: 1px; }
-QLabel#statusText { color: #6666aa; font-size: 11px; }
-QLineEdit, QComboBox {
-    background: #0f3460; color: #e0e0ff; border: 1px solid #1a4a7a;
-    border-radius: 6px; padding: 8px 12px; font-size: 13px;
-}
-QLineEdit:focus, QComboBox:focus { border: 1px solid #4CAF50; }
-QComboBox::drop-down { border: none; width: 24px; }
-QComboBox::down-arrow { image: none; border-left: 5px solid transparent;
-    border-right: 5px solid transparent; border-top: 6px solid #8888bb; margin-right: 8px; }
-QComboBox QAbstractItemView {
-    background: #16213e; color: #e0e0ff; border: 1px solid #0f3460;
-    selection-background-color: #0f3460;
-}
-QPushButton { border: none; border-radius: 6px; padding: 8px 16px; font-size: 13px; font-weight: bold; }
-QPushButton#primary { background: #4CAF50; color: white; }
-QPushButton#primary:hover { background: #45a049; }
-QPushButton#danger { background: #f44336; color: white; }
-QPushButton#danger:hover { background: #d32f2f; }
-QPushButton#action { background: #0f3460; color: #c8c8d4; border: 1px solid #1a4a7a; }
-QPushButton#action:hover { background: #1a4a7a; color: #fff; }
-QPushButton#action:checked { background: #4CAF50; color: white; border: 1px solid #4CAF50; }
-QPushButton#pill { background: #1a1a35; color: #8888bb; border: 1px solid #2a2a4a; border-radius: 14px; padding: 6px 14px; font-size: 12px; }
-QPushButton#pill:hover { border-color: #4CAF50; color: #4CAF50; }
-QPushButton#pill:checked { background: #4CAF50; color: white; border-color: #4CAF50; }
-QRadioButton { color: #c8c8d4; font-size: 13px; spacing: 8px; }
-QRadioButton::indicator { width: 16px; height: 16px; border-radius: 8px; border: 2px solid #4a4a6a; }
-QRadioButton::indicator:checked { background: #4CAF50; border-color: #4CAF50; }
-QCheckBox { color: #c8c8d4; font-size: 12px; spacing: 6px; }
-QCheckBox::indicator { width: 16px; height: 16px; border-radius: 3px; border: 2px solid #4a4a6a; }
-QCheckBox::indicator:checked { background: #4CAF50; border-color: #4CAF50; }
-QSlider::groove:horizontal { height: 4px; background: #2a2a4a; border-radius: 2px; }
-QSlider::handle:horizontal { background: #4CAF50; width: 14px; height: 14px; margin: -5px 0; border-radius: 7px; }
-QSlider::sub-page:horizontal { background: #4CAF50; border-radius: 2px; }
-QSpinBox { background: #0f3460; color: #e0e0ff; border: 1px solid #1a4a7a; border-radius: 6px; padding: 6px; font-size: 13px; }
-QScrollBar:vertical { background: transparent; width: 6px; }
-QScrollBar::handle:vertical { background: #2a2a4a; border-radius: 3px; min-height: 30px; }
-QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
-QTextEdit { background: #0f3460; color: #c8c8d4; border: 1px solid #1a4a7a; border-radius: 6px; font-size: 12px; }
-QFrame#viewerBg { background: #0d0d1a; border: none; }
+# ============ 样式 ============
+STYLE = """
+QMainWindow, QWidget { background:#1c1c1e; color:#f0f0f0; }
+QFrame#sidebar { background:#262628; border-right:1px solid #38383a; }
+QFrame#section { background:#2c2c2e; border-radius:6px; border:1px solid #38383a; }
+QLabel { color:#f0f0f0; font-size:12px; }
+QLabel#h2 { color:#98989e; font-size:10px; font-weight:600; letter-spacing:.8px; }
+QLineEdit, QComboBox { background:#1c1c1e; color:#f0f0f0; border:1px solid #38383a;
+    border-radius:5px; padding:7px 10px; font-size:12px; }
+QLineEdit:focus { border-color:#0070F9; }
+QPushButton { border:none; border-radius:5px; padding:7px; font-size:12px; font-weight:600; }
+QPushButton#primary { background:#0070F9; color:#fff; }
+QPushButton#primary:hover { background:#0058d0; }
+QPushButton#primary:disabled { background:#1c2a40; color:#666; }
+QPushButton#danger { background:#ff3b30; color:#fff; }
+QPushButton#plain { background:#1c1c1e; color:#98989e; border:1px solid #38383a; }
+QPushButton#plain:hover { background:#38383a; color:#f0f0f0; }
+QRadioButton { color:#98989e; font-size:12px; spacing:6px; }
+QRadioButton::indicator { width:14px; height:14px; border-radius:7px; border:2px solid #38383a; }
+QRadioButton::indicator:checked { background:#0070F9; border-color:#0070F9; }
+QCheckBox { color:#98989e; font-size:11px; }
+QCheckBox::indicator { width:14px; height:14px; border-radius:3px; border:2px solid #38383a; }
+QCheckBox::indicator:checked { background:#0070F9; border-color:#0070F9; }
+QSlider::groove:horizontal { height:3px; background:#38383a; border-radius:1px; }
+QSlider::handle:horizontal { background:#0070F9; width:12px; height:12px; margin:-4px 0; border-radius:6px; }
+QSlider::sub-page:horizontal { background:#0070F9; border-radius:1px; }
+QSpinBox { background:#1c1c1e; color:#f0f0f0; border:1px solid #38383a; border-radius:4px; padding:3px 6px; font-size:11px; }
+QScrollBar:vertical { background:transparent; width:4px; }
+QScrollBar::handle:vertical { background:#38383a; border-radius:2px; min-height:30px; }
 """
 
-
-# ======================== 工具函数 ========================
-
-def make_section(title: str, parent=None) -> tuple[QFrame, QVBoxLayout]:
-    """创建一个现代风格的区块"""
-    frame = QFrame()
-    frame.setObjectName("section")
-    layout = QVBoxLayout(frame)
-    layout.setContentsMargins(12, 12, 12, 12)
-    layout.setSpacing(8)
-
-    header = QLabel(title)
-    header.setObjectName("sectionTitle")
-    layout.addWidget(header)
-    return frame, layout
-
-
-# ======================== WebSocket 线程 ========================
-
-class WebSocketThread(QThread):
-    message_received = pyqtSignal(dict)
-    connection_changed = pyqtSignal(bool, str)
+# ============ WebSocket 线程 ============
+class WSThread(QThread):
+    recv = pyqtSignal(dict)
+    conn = pyqtSignal(bool, str)
 
     def __init__(self):
         super().__init__()
-        self.server_url = ""
-        self.room = ""
-        self.role = "viewer"
-        self.password = ""
-        self.ws = None
-        self.running = False
-        self._should_reconnect = False
-        self._reconnect_delay = 3
+        self.server = self.room = self.role = self.password = ""
+        self.ws = None; self._run = False; self._recon = False
 
-    def connect(self, server_url: str, room: str, role: str, password: str = ""):
-        self.server_url = server_url
-        self.room = room
-        self.role = role
-        self.password = password
-        self._should_reconnect = True
-        self.start()
+    def go(self, server, room, role, password=""):
+        self.server = server; self.room = room; self.role = role; self.password = password
+        self._recon = True; self.start()
 
-    def disconnect(self):
-        self._should_reconnect = False
-        self.running = False
+    def stop(self):
+        self._recon = False; self._run = False
         if self.ws:
-            try:
-                self.ws.close()
-            except:
-                pass
+            try: self.ws.close()
+            except: pass
             self.ws = None
 
-    def send(self, data: dict) -> bool:
+    def send(self, d):
         try:
             if self.ws and self.ws.sock and self.ws.sock.connected:
-                self.ws.send(json.dumps(data))
-                return True
-        except Exception as e:
-            log.error(f"发送失败: {e}")
+                self.ws.send(json.dumps(d)); return True
+        except: pass
         return False
 
     def run(self):
-        while self._should_reconnect:
-            self.running = True
-            self.connection_changed.emit(False, "连接中...")
+        while self._recon:
+            self._run = True; self.conn.emit(False, "连接中...")
             try:
-                self.ws = websocket.WebSocketApp(
-                    self.server_url,
-                    on_open=self._on_open,
-                    on_message=self._on_message,
-                    on_error=self._on_error,
-                    on_close=self._on_close,
-                )
+                self.ws = websocket.WebSocketApp(self.server,
+                    on_open=self._open, on_message=self._msg,
+                    on_error=self._err, on_close=self._close)
                 self.ws.run_forever(ping_interval=30, ping_timeout=10)
-            except Exception as e:
-                log.error(f"连接异常: {e}")
-            if self._should_reconnect:
-                self.connection_changed.emit(False, "断线重连中...")
-                time.sleep(self._reconnect_delay)
-        self.connection_changed.emit(False, "已断开")
+            except: pass
+            if self._recon:
+                self.conn.emit(False, "断线重连...")
+                time.sleep(3)
+        self.conn.emit(False, "已断开")
 
-    def _on_open(self, ws):
-        self.connection_changed.emit(True, "已连接")
-        reg = {"type": "register", "role": self.role, "room": self.room}
-        if self.password:
-            reg["password"] = self.password
-        self.send(reg)
+    def _open(self, ws):
+        self.conn.emit(True, "已连接")
+        r = {"type":"register","role":self.role,"room":self.room}
+        if self.password: r["password"] = self.password
+        self.send(r)
 
-    def _on_message(self, ws, message):
-        try:
-            msg = json.loads(message)
-            self.message_received.emit(msg)
-        except json.JSONDecodeError:
-            pass
+    def _msg(self, ws, m):
+        try: self.recv.emit(json.loads(m))
+        except: pass
+    def _err(self, ws, e): pass
+    def _close(self, ws, *a): self._run = False
 
-    def _on_error(self, ws, error):
-        log.error(f"WebSocket 错误: {error}")
-
-    def _on_close(self, ws, close_status_code, close_msg):
-        self.running = False
-
-
-# ======================== 屏幕捕获线程 ========================
-
-class ScreenCaptureThread(QThread):
-    frame_captured = pyqtSignal(bytes)
+# ============ 屏幕捕获线程 ============
+class CapThread(QThread):
+    frame = pyqtSignal(bytes)
 
     def __init__(self):
         super().__init__()
-        self.running = False
-        self.quality = 45
-        self.fps = 12
-        self.monitor = 1
-        self.scale_factor = 0.5
-        self.privacy_mode = False
-        self.auto_adapt = True
-        self._send_times = []
+        self._run = False; self.q = 45; self.fps = 12; self.mon = 1
+        self.scale = 0.5; self.privacy = False; self._times = []
 
-    def start_capture(self, quality=45, fps=12, monitor=1, scale_factor=0.5):
-        self.quality = quality
-        self.fps = fps
-        self.monitor = monitor
-        self.scale_factor = scale_factor
-        self.privacy_mode = False
-        self.running = True
-        self.start()
+    def start_cap(self, q=45, fps=12, mon=1, scale=0.5):
+        self.q = q; self.fps = fps; self.mon = mon; self.scale = scale
+        self.privacy = False; self._run = True; self.start()
 
-    def stop_capture(self):
-        self.running = False
-
-    def set_quality(self, q: int):
-        self.quality = max(10, min(95, q))
-
-    def add_send_time(self, t: float):
-        self._send_times.append(t)
-        if len(self._send_times) > 30:
-            self._send_times.pop(0)
-
-    def get_avg_latency(self) -> float:
-        if len(self._send_times) < 5:
-            return 0.0
-        now = time.time()
-        deltas = [now - t for t in self._send_times[-10:]]
-        return sum(deltas) / len(deltas)
+    def stop_cap(self): self._run = False
+    def set_q(self, q): self.q = max(10, min(95, q))
+    def add_t(self, t): self._times.append(t); self._times[:] = self._times[-30:]
+    def lat(self):
+        if len(self._times) < 5: return 0
+        n = time.time(); return sum(n-t for t in self._times[-10:]) / min(len(self._times[-10:]), 10)
 
     def run(self):
-        if not mss or not Image:
-            log.error("缺少 mss/Pillow")
-            return
-        interval = 1.0 / self.fps
+        if not mss or not Image: return
+        iv = 1.0 / max(self.fps, 1)
         with mss.mss() as sct:
-            while self.running:
+            while self._run:
                 try:
-                    start = time.time()
-                    if self.privacy_mode:
-                        pil_img = Image.new("RGB", (640, 360), (20, 20, 30))
-                        draw = ImageDraw.Draw(pil_img)
-                        draw.text((160, 160), "🔒 隐私屏已开启", fill=(100, 100, 120))
+                    s = time.time()
+                    if self.privacy:
+                        pil = Image.new("RGB", (640,360), (28,28,30))
                     else:
-                        mon = sct.monitors[self.monitor]
-                        img = sct.grab(mon)
-                        pil_img = Image.frombytes("RGB", img.size, img.rgb)
-                        if self.scale_factor < 1.0:
-                            w, h = pil_img.size
-                            pil_img = pil_img.resize(
-                                (int(w * self.scale_factor), int(h * self.scale_factor)),
-                                Image.LANCZOS,
-                            )
+                        mon = sct.monitors[min(self.mon, len(sct.monitors)-1)]
+                        im = sct.grab(mon); pil = Image.frombytes("RGB", im.size, im.rgb)
+                        if self.scale < 1.0:
+                            pil = pil.resize((int(pil.width*self.scale), int(pil.height*self.scale)), Image.LANCZOS)
                     buf = io.BytesIO()
-                    pil_img.save(buf, format="JPEG", quality=self.quality, optimize=True)
-                    self.frame_captured.emit(buf.getvalue())
-                    elapsed = time.time() - start
-                    sleep_time = max(0, interval - elapsed)
-                    if sleep_time > 0:
-                        time.sleep(sleep_time)
-                except Exception as e:
-                    log.error(f"捕获失败: {e}")
-                    time.sleep(1)
+                    pil.save(buf, format="JPEG", quality=self.q, optimize=True)
+                    self.frame.emit(buf.getvalue())
+                    e = time.time() - s
+                    if iv - e > 0: time.sleep(iv - e)
+                except Exception as ex: log.error(f"cap: {ex}"); time.sleep(1)
 
-
-# ======================== 远程画面标签 ========================
-
-class RemoteScreenLabel(QLabel):
-    """远程画面显示 - 支持鼠标事件"""
-
+# ============ 画面标签 ============
+class ScreenLabel(QLabel):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.frame_widget = None
-        self.setMouseTracking(True)
+        self.app = None; self.setMouseTracking(True)
         self.setFocusPolicy(Qt.StrongFocus)
         self.setCursor(QCursor(Qt.CrossCursor))
-        self.setStyleSheet("background: #0d0d1a; border: none;")
+        self.setStyleSheet("background:#0d0d1a; border:none;")
+    def mousePressEvent(self, e):
+        if self.app: self.app._v_mouse(e, "click")
+    def mouseReleaseEvent(self, e):
+        if self.app: self.app._v_mouse(e, "mouseup")
+    def mouseDoubleClickEvent(self, e):
+        if self.app: self.app._v_mouse(e, "click")
+    def mouseMoveEvent(self, e):
+        if self.app: self.app._v_move(e)
+    def wheelEvent(self, e):
+        if self.app: self.app._v_wheel(e)
+    def keyPressEvent(self, e):
+        if self.app:
+            k = self.app._k_name(e.key())
+            if k: self.app._v_key(k)
+        super().keyPressEvent(e)
 
-    def mousePressEvent(self, event):
-        if self.frame_widget:
-            self.frame_widget._viewer_mouse_event(event, "click")
-
-    def mouseReleaseEvent(self, event):
-        if self.frame_widget:
-            self.frame_widget._viewer_mouse_event(event, "mouseup")
-
-    def mouseDoubleClickEvent(self, event):
-        if self.frame_widget:
-            self.frame_widget._viewer_mouse_event(event, "click")
-
-    def mouseMoveEvent(self, event):
-        if self.frame_widget:
-            self.frame_widget._viewer_mouse_move(event)
-
-    def wheelEvent(self, event):
-        if self.frame_widget:
-            self.frame_widget._viewer_wheel(event)
-
-    def keyPressEvent(self, event):
-        if self.frame_widget:
-            key = self.frame_widget._qt_key_to_name(event.key())
-            if key:
-                self.frame_widget._viewer_keypress(key)
-        super().keyPressEvent(event)
-
-
-# ======================== 主窗口 ========================
-
-class RemoteControlApp(QMainWindow):
-    """主窗口 - ToDesk 风格"""
-
+# ============ 主窗口 ============
+class MainWin(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle(f"RemoteControl v{APP_VERSION}")
-        self.resize(1200, 800)
-        self.setMinimumSize(900, 600)
-        self.setStyleSheet(DARK_STYLE)
+        self.setWindowTitle(f"RemoteControl v{APP_VER}")
+        self.resize(1200, 800); self.setMinimumSize(900, 600)
+        self.setStyleSheet(STYLE)
+        self.setPalette(self._pal())
 
-        # 状态
-        self.current_role = "viewer"
-        self.connected = False
-        self.remote_resolution = (1920, 1080)
-        self.frame_count = 0
-        self.fps_timer_elapsed = time.time()
-        self.current_fps = 0
-        self.latest_jpeg = None
-        self._pending_connection = False
-        self._last_mouse_send = 0
-        self._file_buffers = {}
+        # state
+        self.role = "viewer"; self.ok = False
+        self.rx, self.ry = 1920, 1080
+        self.fc = 0; self.fts = time.time(); self.fps = 0
+        self.jpg = None; self._pend = False; self._lm = 0
+        self._fbuf = {}; self._ffn = {}
 
-        # 线程
-        self.ws_thread = WebSocketThread()
-        self.ws_thread.message_received.connect(self._on_message)
-        self.ws_thread.connection_changed.connect(self._on_connection_changed)
-
-        self.capture_thread = ScreenCaptureThread()
-        self.capture_thread.frame_captured.connect(self._on_frame_captured)
+        # threads
+        self.ws = WSThread()
+        self.ws.recv.connect(self._on_msg)
+        self.ws.conn.connect(self._on_conn)
+        self.cap = CapThread()
+        self.cap.frame.connect(self._on_cap)
 
         # UI
-        self._build_ui()
-        self._init_tray()
+        self._ui()
+        self._tray()
 
-        # 帧显示定时器
-        self._frame_timer = QTimer()
-        self._frame_timer.timeout.connect(self._display_latest_frame)
+        # timers
+        self._ft = QTimer(); self._ft.timeout.connect(self._disp)
+        self._st = QTimer(); self._st.timeout.connect(self._stbar); self._st.start(2000)
 
-        # 状态定时器
-        self.status_timer = QTimer()
-        self.status_timer.timeout.connect(self._update_status_bar)
-        self.status_timer.start(2000)
+    def _pal(self):
+        p = QPalette()
+        for r, c in [(QPalette.Window, QColor("#1c1c1e")), (QPalette.WindowText, QColor("#f0f0f0")),
+            (QPalette.Base, QColor("#1c1c1e")), (QPalette.Text, QColor("#f0f0f0")),
+            (QPalette.Button, QColor("#2c2c2e")), (QPalette.ButtonText, QColor("#f0f0f0")),
+            (QPalette.Highlight, QColor("#0070F9"))]:
+            p.setColor(r, c)
+        return p
 
-    # ==================== 托盘 ====================
+    # ========== UI ==========
+    def _ui(self):
+        c = QWidget(); self.setCentralWidget(c)
+        root = QHBoxLayout(c); root.setContentsMargins(0,0,0,0); root.setSpacing(0)
 
-    def _init_tray(self):
-        self.tray_icon = QSystemTrayIcon(self)
-        self.tray_icon.setToolTip("RemoteControl")
-        pm = QPixmap(16, 16)
-        pm.fill(QColor("#4CAF50"))
-        self.tray_icon.setIcon(QIcon(pm))
-        menu = QMenu()
-        menu.addAction("显示窗口", lambda: (self.showNormal(), self.activateWindow()))
-        self.tray_connect_action = menu.addAction("📡 连接")
-        self.tray_connect_action.triggered.connect(self._toggle_connection)
-        menu.addSeparator()
-        menu.addAction("退出", self.close)
-        self.tray_icon.setContextMenu(menu)
-        self.tray_icon.activated.connect(
-            lambda r: r == QSystemTrayIcon.DoubleClick and (
-                self.showNormal(), self.activateWindow(), self.tray_icon.hide()))
+        # sidebar
+        sb = QFrame(); sb.setObjectName("sidebar"); sb.setFixedWidth(260)
+        scroll = QScrollArea(); scroll.setWidget(sb); scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame); scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setStyleSheet("background:transparent;border:none;")
 
-    # ==================== UI 构建 ====================
+        v = QVBoxLayout(sb); v.setContentsMargins(12,12,12,12); v.setSpacing(8)
 
-    def _build_ui(self):
-        central = QWidget()
-        self.setCentralWidget(central)
-        root = QHBoxLayout(central)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(0)
+        # logo
+        top = QHBoxLayout()
+        self.dot = QLabel("●"); self.dot.setStyleSheet("color:#666;font-size:10px;")
+        top.addWidget(self.dot)
+        tl = QLabel("RemoteControl"); tl.setStyleSheet("font-size:14px;font-weight:700;")
+        top.addWidget(tl); top.addStretch()
+        v.addLayout(top)
 
-        # ========== 左侧栏 ==========
-        sidebar = QFrame()
-        sidebar.setObjectName("sidebar")
-        sidebar.setFixedWidth(260)
-        sidebar_scroll = QScrollArea()
-        sidebar_scroll.setWidget(sidebar)
-        sidebar_scroll.setWidgetResizable(True)
-        sidebar_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        sidebar_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        sidebar_scroll.setFrameShape(QFrame.NoFrame)
-        sidebar_scroll.setStyleSheet("background:transparent; border:none;")
+        def sec(title):
+            l = QLabel(title); l.setObjectName("h2"); v.addWidget(l)
 
-        svbox = QVBoxLayout(sidebar)
-        svbox.setContentsMargins(12, 12, 12, 12)
-        svbox.setSpacing(10)
+        # connect
+        sec("连接")
+        self.srv = QLineEdit(SERVER); v.addWidget(self.srv)
+        self.room = QLineEdit("default"); self.room.setPlaceholderText("房间号"); v.addWidget(self.room)
+        self.pwd = QLineEdit(); self.pwd.setEchoMode(QLineEdit.Password); self.pwd.setPlaceholderText("密码(可选)"); v.addWidget(self.pwd)
 
-        # 标题 + 状态指示器
-        header = QHBoxLayout()
-        title = QLabel("RemoteControl")
-        title.setObjectName("title")
-        header.addWidget(title)
-        header.addStretch()
-        self.status_dot = QLabel("●")
-        self.status_dot.setStyleSheet("color:#666; font-size:10px;")
-        header.addWidget(self.status_dot)
-        svbox.addLayout(header)
+        mt = QHBoxLayout()
+        self.mv = QRadioButton("主控"); self.mh = QRadioButton("被控"); self.mv.setChecked(True)
+        self.mv.toggled.connect(self._mode); self.mh.toggled.connect(self._mode)
+        mt.addWidget(self.mv); mt.addWidget(self.mh); mt.addStretch(); v.addLayout(mt)
 
-        # ---- 连接区 ----
-        conn_frame, conn_layout = make_section("连接")
-        self.server_input = QLineEdit(DEFAULT_SERVER)
-        conn_layout.addWidget(self.server_input)
-        self.room_input = QLineEdit(DEFAULT_ROOM)
-        self.room_input.setPlaceholderText("房间名（两端一致）")
-        conn_layout.addWidget(self.room_input)
+        self.btn = QPushButton("连接"); self.btn.setObjectName("primary")
+        self.btn.clicked.connect(self._toggle); v.addWidget(self.btn)
 
-        pwd_row = QHBoxLayout()
-        self.password_input = QLineEdit()
-        self.password_input.setEchoMode(QLineEdit.Password)
-        self.password_input.setPlaceholderText("密码（可选）")
-        pwd_row.addWidget(self.password_input)
-        self.show_pwd_btn = QPushButton("👁")
-        self.show_pwd_btn.setFixedSize(32, 32)
-        self.show_pwd_btn.setObjectName("action")
-        self.show_pwd_btn.setCheckable(True)
-        self.show_pwd_btn.toggled.connect(
-            lambda c: self.password_input.setEchoMode(QLineEdit.Normal if c else QLineEdit.Password))
-        pwd_row.addWidget(self.show_pwd_btn)
-        conn_layout.addLayout(pwd_row)
+        # host settings
+        sec("被控端")
+        self.hf = QFrame(); self.hf.setObjectName("section")
+        hv = QVBoxLayout(self.hf); hv.setContentsMargins(10,10,10,10); hv.setSpacing(5)
 
-        # 模式切换
-        mode_row = QHBoxLayout()
-        self.mode_viewer = QRadioButton("👁 主控端")
-        self.mode_host = QRadioButton("🖥 被控端")
-        self.mode_viewer.setChecked(True)
-        self.mode_viewer.toggled.connect(self._on_mode_changed)
-        self.mode_host.toggled.connect(self._on_mode_changed)
-        mode_row.addWidget(self.mode_viewer)
-        mode_row.addWidget(self.mode_host)
-        conn_layout.addLayout(mode_row)
+        pr = QHBoxLayout()
+        self.bf = QPushButton("流畅"); self.bb = QPushButton("均衡"); self.bh = QPushButton("高清")
+        for b in [self.bf, self.bb, self.bh]:
+            b.setObjectName("plain"); b.setCheckable(True); b.setFixedHeight(26)
+            b.setStyleSheet("QPushButton{background:#1c1c1e;color:#98989e;border:1px solid #38383a;border-radius:12px;padding:3px 10px;font-size:11px}\
+                QPushButton:checked{background:#0070F9;color:#fff;border-color:#0070F9}")
+        self.bb.setChecked(True)
+        self.bf.clicked.connect(lambda: self._preset(20,5,25))
+        self.bb.clicked.connect(lambda: self._preset(45,12,50))
+        self.bh.clicked.connect(lambda: self._preset(75,22,80))
+        pr.addWidget(self.bf); pr.addWidget(self.bb); pr.addWidget(self.bh)
+        hv.addLayout(pr)
 
-        self.connect_btn = QPushButton("📡 连接")
-        self.connect_btn.setObjectName("primary")
-        self.connect_btn.clicked.connect(self._toggle_connection)
-        conn_layout.addWidget(self.connect_btn)
-        svbox.addWidget(conn_frame)
+        or1 = QHBoxLayout()
+        or1.addWidget(QLabel("画质"))
+        self.qs = QSlider(Qt.Horizontal); self.qs.setRange(10,95); self.qs.setValue(45)
+        self.ql = QLabel("45"); self.qs.valueChanged.connect(lambda v: self.ql.setText(str(v)))
+        or1.addWidget(self.qs); or1.addWidget(self.ql); hv.addLayout(or1)
 
-        # ---- 被控设置 ----
-        self.host_frame, host_layout = make_section("被控端设置")
-        host_layout.setSpacing(6)
+        or2 = QHBoxLayout()
+        or2.addWidget(QLabel("帧率"))
+        self.fs = QSpinBox(); self.fs.setRange(1,30); self.fs.setValue(12); or2.addWidget(self.fs)
+        or2.addWidget(QLabel("缩放"))
+        self.sc = QComboBox(); self.sc.addItems(["25%","50%","75%","100%"]); self.sc.setCurrentIndex(1); or2.addWidget(self.sc)
+        hv.addLayout(or2)
 
-        # 画质预设
-        preset_row = QHBoxLayout()
-        self.btn_fast = QPushButton("流畅")
-        self.btn_fast.setObjectName("pill")
-        self.btn_fast.setCheckable(True)
-        self.btn_fast.clicked.connect(lambda: self._set_preset(20, 5, 25))
-        self.btn_balanced = QPushButton("均衡")
-        self.btn_balanced.setObjectName("pill")
-        self.btn_balanced.setCheckable(True)
-        self.btn_balanced.setChecked(True)
-        self.btn_balanced.clicked.connect(lambda: self._set_preset(45, 12, 50))
-        self.btn_hd = QPushButton("高清")
-        self.btn_hd.setObjectName("pill")
-        self.btn_hd.setCheckable(True)
-        self.btn_hd.clicked.connect(lambda: self._set_preset(75, 22, 80))
-        preset_row.addWidget(self.btn_fast)
-        preset_row.addWidget(self.btn_balanced)
-        preset_row.addWidget(self.btn_hd)
-        host_layout.addLayout(preset_row)
+        or3 = QHBoxLayout()
+        or3.addWidget(QLabel("显示器"))
+        self.ms = QSpinBox(); self.ms.setRange(1,4); self.ms.setValue(1); or3.addWidget(self.ms)
+        self.pk = QCheckBox("隐私屏"); self.pk.toggled.connect(lambda c: setattr(self.cap, 'privacy', c)); or3.addWidget(self.pk)
+        or3.addStretch(); hv.addLayout(or3)
 
-        # 画质滑块
-        qrow = QHBoxLayout()
-        qrow.addWidget(QLabel("画质"))
-        self.quality_slider = QSlider(Qt.Horizontal)
-        self.quality_slider.setRange(10, 95)
-        self.quality_slider.setValue(45)
-        self.quality_label = QLabel("45")
-        self.quality_slider.valueChanged.connect(
-            lambda v: self.quality_label.setText(str(v)))
-        qrow.addWidget(self.quality_slider)
-        qrow.addWidget(self.quality_label)
-        host_layout.addLayout(qrow)
+        self.hf.setEnabled(False); v.addWidget(self.hf)
 
-        # 帧率+缩放+显示器
-        optrow = QHBoxLayout()
-        optrow.addWidget(QLabel("帧率"))
-        self.fps_spin = QSpinBox()
-        self.fps_spin.setRange(1, 30)
-        self.fps_spin.setValue(12)
-        optrow.addWidget(self.fps_spin)
-        optrow.addWidget(QLabel("缩放"))
-        self.scale_combo = QComboBox()
-        self.scale_combo.addItems(["25%", "50%", "75%", "100%"])
-        self.scale_combo.setCurrentIndex(1)
-        optrow.addWidget(self.scale_combo)
-        host_layout.addLayout(optrow)
+        # viewer settings
+        sec("主控端")
+        self.vf = QFrame(); self.vf.setObjectName("section")
+        vv = QVBoxLayout(self.vf); vv.setContentsMargins(10,10,10,10); vv.setSpacing(5)
 
-        # 显示器和隐私
-        botrow = QHBoxLayout()
-        botrow.addWidget(QLabel("显示器"))
-        self.monitor_spin = QSpinBox()
-        self.monitor_spin.setRange(1, 4)
-        self.monitor_spin.setValue(1)
-        botrow.addWidget(self.monitor_spin)
-        self.privacy_check = QCheckBox("隐私屏")
-        self.privacy_check.toggled.connect(self._toggle_privacy)
-        botrow.addWidget(self.privacy_check)
-        host_layout.addLayout(botrow)
+        or4 = QHBoxLayout()
+        or4.addWidget(QLabel("缩放"))
+        self.sm = QComboBox(); self.sm.addItems(["等比","拉伸","原始","适应宽度"]); or4.addWidget(self.sm)
+        vv.addLayout(or4)
+        self.fs_btn = QPushButton("全屏"); self.fs_btn.setObjectName("plain")
+        self.fs_btn.clicked.connect(self._fullscreen); vv.addWidget(self.fs_btn)
+        self.vi = QLabel("--"); self.vi.setStyleSheet("color:#666;font-size:10px;"); vv.addWidget(self.vi)
+        self.vf.setEnabled(False); v.addWidget(self.vf)
 
-        self.host_frame.setEnabled(False)
-        svbox.addWidget(self.host_frame)
+        # tools
+        sec("工具")
+        tr = QHBoxLayout()
+        self.fb = QPushButton("文件"); self.fb.setObjectName("plain"); self.fb.clicked.connect(self._file_dlg)
+        self.cb = QPushButton("聊天"); self.cb.setObjectName("plain"); self.cb.setCheckable(True); self.cb.toggled.connect(self._chat_tog)
+        tr.addWidget(self.fb); tr.addWidget(self.cb); v.addLayout(tr)
 
-        # ---- 主控设置 ----
-        self.viewer_frame, viewer_layout = make_section("主控端设置")
+        v.addStretch()
+        vl = QLabel(f"v{APP_VER}"); vl.setStyleSheet("color:#444;font-size:9px;text-align:center;")
+        vl.setAlignment(Qt.AlignCenter); v.addWidget(vl)
 
-        zrow = QHBoxLayout()
-        zrow.addWidget(QLabel("缩放"))
-        self.scale_mode = QComboBox()
-        self.scale_mode.addItems(["等比", "拉伸", "原始", "适应宽度"])
-        self.scale_mode.setCurrentIndex(0)
-        zrow.addWidget(self.scale_mode)
-        viewer_layout.addLayout(zrow)
+        # right: viewer
+        r = QFrame(); r.setObjectName("screen")
+        rv = QVBoxLayout(r); rv.setContentsMargins(0,0,0,0); rv.setSpacing(0)
 
-        trow = QHBoxLayout()
-        self.fullscreen_btn = QPushButton("⛶ 全屏")
-        self.fullscreen_btn.setObjectName("action")
-        self.fullscreen_btn.clicked.connect(self._toggle_fullscreen)
-        trow.addWidget(self.fullscreen_btn)
-        viewer_layout.addLayout(trow)
+        self.sl = ScreenLabel(); self.sl.app = self; self.sl.setAlignment(Qt.AlignCenter)
+        self.ph = QLabel("连接后显示远程画面"); self.ph.setAlignment(Qt.AlignCenter)
+        self.ph.setStyleSheet("color:#333;font-size:14px;")
+        self.vs = QStackedWidget(); self.vs.addWidget(self.ph); self.vs.addWidget(self.sl)
+        rv.addWidget(self.vs, 1)
 
-        self.viewer_info = QLabel("等待连接...")
-        self.viewer_info.setStyleSheet("color:#666; font-size:11px;")
-        viewer_layout.addWidget(self.viewer_info)
+        # floating toolbar
+        tb = QFrame(); tb.setStyleSheet("QFrame{background:rgba(38,38,40,220);border-radius:6px;}\
+            QPushButton{background:transparent;border:none;color:#98989e;padding:4px 8px;font-size:14px;border-radius:3px;}\
+            QPushButton:hover{background:#38383a;color:#f0f0f0;}")
+        tbh = QHBoxLayout(tb); tbh.setContentsMargins(4,2,4,2); tbh.setSpacing(0)
 
-        self.viewer_frame.setEnabled(False)
-        svbox.addWidget(self.viewer_frame)
+        def tb_btn(txt, tip, cb):
+            b = QPushButton(txt); b.setToolTip(tip); b.clicked.connect(cb); tbh.addWidget(b); return b
+        tb_btn("⛶", "全屏", self._fullscreen)
+        tb_btn("\U0001f4c1", "文件", self._file_dlg)
+        tb_btn("\U0001f4ac", "聊天", lambda: self.cb.toggle())
+        s1 = QLabel("|"); s1.setStyleSheet("color:#38383a;padding:0 4px;"); tbh.addWidget(s1)
+        self.tq = QLabel(""); self.tq.setStyleSheet("color:#666;font-size:10px;padding:0 6px;"); tbh.addWidget(self.tq)
+        self.tf = QLabel(""); self.tf.setStyleSheet("color:#666;font-size:10px;padding:0 6px;"); tbh.addWidget(self.tf)
+        s2 = QLabel("|"); s2.setStyleSheet("color:#38383a;padding:0 4px;"); tbh.addWidget(s2)
+        tb_btn("✕", "断开", self._disc)
+        tb.setFixedHeight(30)
+        rv.addWidget(tb)
 
-        # ---- 快捷工具 ----
-        tool_frame, tool_layout = make_section("工具")
-
-        self.btn_file = QPushButton("📁 传文件")
-        self.btn_file.setObjectName("action")
-        self.btn_file.clicked.connect(self._show_file_dialog)
-        tool_layout.addWidget(self.btn_file)
-
-        self.btn_chat = QPushButton("💬 聊天")
-        self.btn_chat.setObjectName("action")
-        self.btn_chat.setCheckable(True)
-        self.btn_chat.toggled.connect(self._toggle_chat)
-        tool_layout.addWidget(self.btn_chat)
-
-        svbox.addWidget(tool_frame)
-        svbox.addStretch()
-
-        # 底部版本号
-        vlabel = QLabel(f"v{APP_VERSION}")
-        vlabel.setObjectName("statusText")
-        vlabel.setAlignment(Qt.AlignCenter)
-        svbox.addWidget(vlabel)
-
-        # ========== 右侧画面区 ==========
-        right = QFrame()
-        right.setObjectName("viewerBg")
-        rvbox = QVBoxLayout(right)
-        rvbox.setContentsMargins(0, 0, 0, 0)
-        rvbox.setSpacing(0)
-
-        self.viewer_label = RemoteScreenLabel()
-        self.viewer_label.frame_widget = self
-        self.viewer_label.setAlignment(Qt.AlignCenter)
-
-        self.placeholder = QLabel()
-        self.placeholder.setAlignment(Qt.AlignCenter)
-        self.placeholder.setText(
-            "🔗 <b>RemoteControl</b><br><br>"
-            "<span style='color:#555;font-size:13px;'>"
-            "选择模式 → 输入房间名 → 点击连接<br><br>"
-            "🖥 被控端：共享本机屏幕<br>"
-            "👁 主控端：查看远程画面</span>"
-        )
-        self.placeholder.setStyleSheet("color:#333; font-size:15px; background:transparent;")
-
-        self.view_stack = QStackedWidget()
-        self.view_stack.addWidget(self.placeholder)
-        self.view_stack.addWidget(self.viewer_label)
-        rvbox.addWidget(self.view_stack, 1)
-
-        # ---- 浮动工具栏 ----
-        self.toolbar = QFrame()
-        self.toolbar.setStyleSheet("""
-            QFrame { background: rgba(22, 33, 62, 200); border-radius: 8px; }
-            QPushButton { background: transparent; color: #c8c8d4; border: none;
-                         border-radius: 4px; padding: 6px 10px; font-size: 18px; }
-            QPushButton:hover { background: rgba(76, 175, 80, 0.3); }
-        """)
-        tb_layout = QHBoxLayout(self.toolbar)
-        tb_layout.setContentsMargins(6, 4, 6, 4)
-        tb_layout.setSpacing(2)
-
-        def tb_btn(text, tip, cb):
-            b = QPushButton(text)
-            b.setToolTip(tip)
-            b.clicked.connect(cb)
-            tb_layout.addWidget(b)
-            return b
-
-        tb_btn("⛶", "全屏", self._toggle_fullscreen)
-        tb_btn("📁", "传文件", self._show_file_dialog)
-        tb_btn("💬", "聊天", lambda: self.btn_chat.toggle())
-        tb_btn("🔄", "刷新", lambda: None)
-        self.tb_quality = QLabel("45p")
-        self.tb_quality.setStyleSheet("color:#888; font-size:11px; padding:0 8px;")
-        tb_layout.addWidget(self.tb_quality)
-        self.tb_fps = QLabel("0fps")
-        self.tb_fps.setStyleSheet("color:#888; font-size:11px; padding:0 8px;")
-        tb_layout.addWidget(self.tb_fps)
-        tb_btn("✕", "断开", self.disconnect_server)
-        self.toolbar.setFixedHeight(36)
-        rvbox.addWidget(self.toolbar)
-
-        # ========== 聊天面板 ==========
-        self.chat_widget = QFrame()
-        self.chat_widget.setObjectName("chatPanel")
-        self.chat_widget.setFixedWidth(260)
-        self.chat_widget.hide()
-
-        cvbox = QVBoxLayout(self.chat_widget)
-        cvbox.setContentsMargins(10, 10, 10, 10)
-        cvbox.setSpacing(8)
-
-        ch = QLabel("💬 聊天")
-        ch.setObjectName("title")
-        ch.setStyleSheet("font-size:14px;")
-        cvbox.addWidget(ch)
-
-        self.chat_display = QTextEdit()
-        self.chat_display.setReadOnly(True)
-        self.chat_display.setPlaceholderText("")
-        cvbox.addWidget(self.chat_display)
-
+        # chat panel
+        self.cp = QFrame(); self.cp.setObjectName("sidebar")
+        self.cp.setFixedWidth(250); self.cp.hide()
+        cv = QVBoxLayout(self.cp); cv.setContentsMargins(10,10,10,10); cv.setSpacing(6)
+        cv.addWidget(QLabel("聊天"))
+        self.cm = QTextEdit(); self.cm.setReadOnly(True); cv.addWidget(self.cm)
         ci = QHBoxLayout()
-        self.chat_input = QLineEdit()
-        self.chat_input.setPlaceholderText("输入消息...")
-        self.chat_input.returnPressed.connect(self._send_chat)
-        ci.addWidget(self.chat_input)
+        self.ci = QLineEdit(); self.ci.setPlaceholderText("输入...")
+        self.ci.returnPressed.connect(self._chat_send); ci.addWidget(self.ci)
+        cs = QPushButton("发送"); cs.setObjectName("primary"); cs.setFixedWidth(52)
+        cs.clicked.connect(self._chat_send); ci.addWidget(cs); cv.addLayout(ci)
 
-        self.chat_send_btn = QPushButton("发送")
-        self.chat_send_btn.setObjectName("primary")
-        self.chat_send_btn.setFixedWidth(60)
-        self.chat_send_btn.clicked.connect(self._send_chat)
-        ci.addWidget(self.chat_send_btn)
-        cvbox.addLayout(ci)
+        root.addWidget(scroll); root.addWidget(r, 1); root.addWidget(self.cp)
+        self._preset(45,12,50)
 
-        # ========== 组装 ==========
-        root.addWidget(sidebar_scroll)
-        root.addWidget(right, 1)
-        root.addWidget(self.chat_widget)
+    # ========== tray ==========
+    def _tray(self):
+        self.ti = QSystemTrayIcon(self)
+        pm = QPixmap(16,16); pm.fill(QColor("#0070F9"))
+        self.ti.setIcon(QIcon(pm)); self.ti.setToolTip("RemoteControl")
+        m = QMenu()
+        m.addAction("显示", lambda: (self.showNormal(), self.activateWindow()))
+        self.ta = m.addAction("连接"); self.ta.triggered.connect(self._toggle)
+        m.addSeparator(); m.addAction("退出", self.close)
+        self.ti.setContextMenu(m)
+        self.ti.activated.connect(lambda r: r==QSystemTrayIcon.DoubleClick and (self.showNormal(), self.activateWindow()))
 
-        self._set_preset(45, 12, 50)
+    # ========== connection ==========
+    def _toggle(self):
+        if self._pend: return
+        if self.ok: self._disc(); return
+        sv = self.srv.text().strip(); rm = self.room.text().strip()
+        if not sv or not rm: return
+        self.role = "host" if self.mh.isChecked() else "viewer"
+        self.btn.setEnabled(False); self.btn.setText("连接中..."); self._pend = True
+        self.ws.go(sv, rm, self.role, self.pwd.text())
 
-    # ==================== 连接管理 ====================
+    def _disc(self):
+        self._ft.stop(); self.jpg = None
+        self.cap.stop_cap(); self.cap.wait(1500)
+        self.ws._recon = False; self.ws.stop(); self.ws.wait(1500)
+        self.ok = False; self.vs.setCurrentIndex(0); self.sl.clear()
+        self.btn.setText("连接"); self.btn.setEnabled(True)
+        self.btn.setObjectName("primary"); self.btn.style().unpolish(self.btn); self.btn.style().polish(self.btn)
+        self.dot.setStyleSheet("color:#666;font-size:10px;")
 
-    def _toggle_connection(self):
-        if self._pending_connection:
-            return
-        if self.connected:
-            self.disconnect_server()
-            return
-
-        server = self.server_input.text().strip()
-        room = self.room_input.text().strip()
-        if not server or not room:
-            return
-
-        self.current_role = "host" if self.mode_host.isChecked() else "viewer"
-        self.connect_btn.setEnabled(False)
-        self.connect_btn.setText("⏳ 连接中...")
-        self._pending_connection = True
-
-        pwd = self.password_input.text()
-        self.ws_thread.connect(server, room, self.current_role, password=pwd)
-
-    def disconnect_server(self):
-        self._frame_timer.stop()
-        self.latest_jpeg = None
-
-        self.capture_thread.stop_capture()
-        if self.capture_thread.isRunning():
-            self.capture_thread.wait(1500)
-
-        self.ws_thread._should_reconnect = False
-        self.ws_thread.disconnect()
-        if self.ws_thread.isRunning():
-            self.ws_thread.wait(1500)
-
-        self.connected = False
-        self.view_stack.setCurrentIndex(0)
-        self.viewer_label.clear()
-        self.connect_btn.setText("📡 连接")
-        self.connect_btn.setEnabled(True)
-        self.status_dot.setStyleSheet("color:#666; font-size:10px;")
-        log.info("已断开")
-
-    def _on_connection_changed(self, connected: bool, status: str):
-        self.connected = connected
-        if connected:
-            self.connect_btn.setText("🔴 断开")
-            self.connect_btn.setEnabled(True)
-            self._pending_connection = False
-            self.status_dot.setStyleSheet("color:#4CAF50; font-size:10px;")
-
-            if self.current_role == "host":
-                scale_text = self.scale_combo.currentText()
-                scale_map = {"25%": 0.25, "50%": 0.5, "75%": 0.75, "100%": 1.0}
-                sf = scale_map.get(scale_text, 0.5)
-                self.capture_thread.start_capture(
-                    quality=self.quality_slider.value(),
-                    fps=self.fps_spin.value(),
-                    monitor=self.monitor_spin.value(),
-                    scale_factor=sf,
-                )
+    def _on_conn(self, ok, st):
+        self.ok = ok
+        if ok:
+            self.btn.setText("断开"); self.btn.setEnabled(True); self._pend = False
+            self.btn.setObjectName("danger"); self.btn.style().unpolish(self.btn); self.btn.style().polish(self.btn)
+            self.dot.setStyleSheet("color:#36BA78;font-size:10px;")
+            if self.role == "host":
+                scale_map = {"25%":.25,"50%":.5,"75%":.75,"100%":1.0}
+                self.cap.start_cap(self.qs.value(), self.fs.value(), self.ms.value(), scale_map.get(self.sc.currentText(), .5))
             else:
-                self.view_stack.setCurrentIndex(1)
-                self._frame_timer.start(50)
-                self.latest_jpeg = None
+                self.vs.setCurrentIndex(1); self._ft.start(50); self.jpg = None
         else:
-            if self.ws_thread._should_reconnect:
-                self.connect_btn.setText("⏳ 重连中...")
-                self.connect_btn.setEnabled(False)
+            if self.ws._recon:
+                self.btn.setText("重连中..."); self.btn.setEnabled(False)
             else:
-                self.connect_btn.setText("📡 连接")
-                self.connect_btn.setEnabled(True)
-                self._pending_connection = False
-                self.status_dot.setStyleSheet("color:#f44336; font-size:10px;")
+                self.btn.setText("连接"); self.btn.setEnabled(True); self._pend = False
+                self.btn.setObjectName("primary"); self.btn.style().unpolish(self.btn); self.btn.style().polish(self.btn)
+                self.dot.setStyleSheet("color:#ff3b30;font-size:10px;")
 
-    def _on_mode_changed(self):
-        is_host = self.mode_host.isChecked()
-        is_viewer = self.mode_viewer.isChecked()
-        self.host_frame.setEnabled(is_host)
-        self.viewer_frame.setEnabled(is_viewer)
-        if self.connected:
-            self.disconnect_server()
+    def _mode(self):
+        h = self.mh.isChecked(); v = self.mv.isChecked()
+        self.hf.setEnabled(h); self.vf.setEnabled(v)
+        if self.ok: self._disc()
 
-    def _on_message(self, msg: dict):
-        t = msg.get("type")
-
+    # ========== messages ==========
+    def _on_msg(self, m):
+        t = m.get("type")
         if t == "frame":
-            data = msg.get("data", "")
-            if data:
-                try:
-                    self.latest_jpeg = base64.b64decode(data)
-                except:
-                    pass
-
+            d = m.get("data","")
+            if d:
+                try: self.jpg = base64.b64decode(d)
+                except: pass
         elif t == "chat":
-            self._on_chat_message(msg.get("text", ""), msg.get("name", "未知"))
-
+            self._chat_rcv(m.get("text",""), m.get("name","?"))
         elif t == "clipboard":
-            text = msg.get("text", "")
-            if text:
-                try:
-                    QApplication.clipboard().setText(text)
-                except:
-                    pass
-
+            t2 = m.get("text","")
+            if t2:
+                try: QApplication.clipboard().setText(t2)
+                except: pass
         elif t == "input":
-            self._handle_remote_input(msg.get("event"), msg.get("data", {}))
-
+            self._remote_in(m.get("event",""), m.get("data",{}))
         elif t == "file_chunk":
-            fid = msg.get("file_id", "")
-            chunk_b64 = msg.get("chunk", "")
-            final = msg.get("final", False)
-            if fid not in self._file_buffers:
-                self._file_buffers[fid] = bytearray()
-            if chunk_b64:
-                self._file_buffers[fid].extend(base64.b64decode(chunk_b64))
-            if final:
-                size = len(self._file_buffers[fid])
-                log.info(f"文件接收完成: {size/1024:.0f}KB")
-                self._file_buffers.pop(fid, None)
-
+            fid = m.get("file_id",""); c = m.get("chunk",""); fnl = m.get("final",False)
+            if fid not in self._fbuf: self._fbuf[fid] = bytearray()
+            if c: self._fbuf[fid].extend(base64.b64decode(c))
+            if fnl:
+                n = self._ffn.get(fid,"?"); sz = len(self._fbuf[fid])
+                log.info(f"received: {n} ({sz/1024:.0f}KB)")
+                self._fbuf.pop(fid,None); self._ffn.pop(fid,None)
         elif t == "file_meta":
-            fname = msg.get("name", "")
-            fsize = msg.get("size", 0)
-            self.status_dot.setToolTip(f"📁 收到: {fname}")
-            self.ws_thread.send({"type": "file_accept", "file_id": msg.get("file_id")})
-
+            fid = m.get("file_id",""); fn = m.get("name",""); sz = m.get("size",0)
+            self._ffn[fid] = fn
+            self.ws.send({"type":"file_accept","file_id":fid})
         elif t == "viewer_joined":
-            log.info(f"观察者加入: {msg.get('viewer_id')}")
+            self.ta.setText(f"观察者加入")
         elif t == "host_ready":
-            log.info("主机就绪")
+            self.ta.setText("主机就绪")
         elif t == "host_left":
-            self.view_stack.setCurrentIndex(0)
-            QMessageBox.information(self, "断开", "远程主机已断开")
+            self.vs.setCurrentIndex(0)
+            QMessageBox.information(self,"断开","主机已断开")
         elif t == "error":
-            self.status_dot.setToolTip(f"❌ {msg.get('msg')}")
-            QMessageBox.warning(self, "错误", msg.get("msg", ""))
+            QMessageBox.warning(self,"错误",m.get("msg",""))
 
-    def _display_latest_frame(self):
-        if not self.latest_jpeg or self.current_role != "viewer":
-            return
+    def _disp(self):
+        if not self.jpg or self.role != "viewer": return
         try:
-            pm = QPixmap()
-            pm.loadFromData(self.latest_jpeg, "JPEG")
-            if pm.isNull():
-                return
-            self.remote_resolution = (pm.width(), pm.height())
-
-            mode = self.scale_mode.currentText()
-            ls = self.viewer_label.size()
-
-            if mode == "原始":
-                scaled = pm
-            elif mode == "拉伸":
-                scaled = pm.scaled(ls, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+            pm = QPixmap(); pm.loadFromData(self.jpg, "JPEG")
+            if pm.isNull(): return
+            self.rx, self.ry = pm.width(), pm.height()
+            mode = self.sm.currentText(); ls = self.sl.size()
+            if mode == "原始": s = pm
+            elif mode == "拉伸": s = pm.scaled(ls, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
             elif mode == "适应宽度":
-                w = ls.width()
-                h = int(pm.height() * w / max(pm.width(), 1))
-                scaled = pm.scaled(w, h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
-            else:
-                scaled = pm.scaled(ls, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                w = ls.width(); h = int(pm.height() * w / max(pm.width(),1))
+                s = pm.scaled(w, h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+            else: s = pm.scaled(ls, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            self.sl.setPixmap(s)
+            self.fc += 1
+            if time.time() - self.fts >= 2:
+                self.fps = self.fc / (time.time() - self.fts)
+                self.fts = time.time(); self.fc = 0
+            if self.fc % 3 == 0:
+                self.vi.setText(f"{self.rx}x{self.ry}  {self.fps:.0f}fps")
+        except: pass
 
-            self.viewer_label.setPixmap(scaled)
+    def _on_cap(self, data):
+        t = time.time(); self.cap.add_t(t)
+        b = base64.b64encode(data).decode()
+        self.ws.send({"type":"frame","data":b,"timestamp":int(t*1000)})
+        lat = self.cap.lat()
+        if self.cap._run and lat > 0.3:
+            nq = max(15, self.cap.q - 5)
+            if nq != self.cap.q: self.cap.set_q(nq); self.qs.setValue(nq)
+        elif lat < 0.08 and self.cap.q < 60:
+            nq = min(70, self.cap.q + 3)
+            if nq != self.cap.q: self.cap.set_q(nq); self.qs.setValue(nq)
 
-            self.frame_count += 1
-            elapsed = time.time() - self.fps_timer_elapsed
-            if elapsed >= 2:
-                self.current_fps = self.frame_count / elapsed
-                self.fps_timer_elapsed = time.time()
-                self.frame_count = 0
-
-            if self.frame_count % 5 == 0:
-                rx, ry = self.remote_resolution
-                self.viewer_info.setText(f"{rx}×{ry} | {self.current_fps:.0f}fps | {scaled.width()}×{scaled.height()}")
-
-        except:
-            pass
-
-    def _on_frame_captured(self, jpeg_bytes: bytes):
-        send_time = time.time()
-        self.capture_thread.add_send_time(send_time)
-        b64 = base64.b64encode(jpeg_bytes).decode()
-        self.ws_thread.send({
-            "type": "frame", "data": b64,
-            "timestamp": int(send_time * 1000),
-        })
-
-        if self.capture_thread.auto_adapt:
-            lat = self.capture_thread.get_avg_latency()
-            if lat > 0.3:
-                new_q = max(15, self.capture_thread.quality - 5)
-                if new_q != self.capture_thread.quality:
-                    self.capture_thread.set_quality(new_q)
-                    self.quality_slider.setValue(new_q)
-            elif lat < 0.08 and self.capture_thread.quality < 60:
-                new_q = min(70, self.capture_thread.quality + 3)
-                if new_q != self.capture_thread.quality:
-                    self.capture_thread.set_quality(new_q)
-                    self.quality_slider.setValue(new_q)
-
-    def _update_status_bar(self):
-        if self.connected:
-            self.tb_quality.setText(f"{self.capture_thread.quality}p" if self.current_role == "host" else "")
-            self.tb_fps.setText(f"{int(self.current_fps)}fps" if self.current_role == "viewer" else
-                                f"{self.fps_spin.value()}fps")
+    def _stbar(self):
+        if self.ok:
+            self.tf.setText(f"{int(self.fps)}fps" if self.role=="viewer" else f"{self.fs.value()}fps")
+            self.tq.setText(f"{self.cap.q}p" if self.role=="host" else "")
         else:
-            self.tb_quality.setText("")
-            self.tb_fps.setText("")
+            self.tq.setText(""); self.tf.setText("")
 
-    # ==================== 预设 ====================
+    # ========== presets ==========
+    def _preset(self, q, f, s):
+        self.qs.setValue(q); self.fs.setValue(f)
+        self.sc.setCurrentIndex({25:0,50:1,75:2,80:2,100:3}.get(s,1))
+        for b in [self.bf,self.bb,self.bh]: b.setChecked(False)
+        {20:self.bf,45:self.bb,75:self.bh}.get(q,self.bb).setChecked(True)
 
-    def _set_preset(self, quality, fps, scale_pct):
-        self.quality_slider.setValue(quality)
-        self.fps_spin.setValue(fps)
-        scale_map = {25: 0, 50: 1, 80: 3}
-        self.scale_combo.setCurrentIndex(scale_map.get(scale_pct, 1))
-
-        for b in [self.btn_fast, self.btn_balanced, self.btn_hd]:
-            b.setChecked(False)
-        if quality <= 25:
-            self.btn_fast.setChecked(True)
-        elif quality <= 55:
-            self.btn_balanced.setChecked(True)
-        else:
-            self.btn_hd.setChecked(True)
-
-    # ==================== 工具栏 ====================
-
-    def _toggle_fullscreen(self):
+    # ========== toolbar ==========
+    def _fullscreen(self):
         if self.isFullScreen():
-            self.showNormal()
-            self.fullscreen_btn.setText("⛶ 全屏")
-            self.toolbar.show()
+            self.showNormal(); self.fs_btn.setText("全屏")
         else:
-            self.showFullScreen()
-            self.fullscreen_btn.setText("✕ 退出全屏")
-            self.toolbar.hide()
+            self.showFullScreen(); self.fs_btn.setText("退出全屏")
 
-    # ==================== 聊天 ====================
+    # ========== chat ==========
+    def _chat_tog(self, v):
+        self.cp.setVisible(v)
 
-    def _toggle_chat(self, visible: bool):
-        self.chat_widget.setVisible(visible)
-        self.btn_chat.setText("✕ 聊天" if visible else "💬 聊天")
+    def _chat_send(self):
+        t = self.ci.text().strip()
+        if not t or not self.ok: return
+        tg = "host" if self.role == "viewer" else "all"
+        self.ws.send({"type":"chat","text":t,"target":tg})
+        self.cm.append(f"<b style='color:#36BA78'>我:</b> {t}")
+        self.ci.clear()
 
-    def _send_chat(self):
-        text = self.chat_input.text().strip()
-        if not text or not self.connected:
-            return
-        target = "host" if self.current_role == "viewer" else "all"
-        self.ws_thread.send({"type": "chat", "text": text, "target": target})
-        name = "我" if self.current_role == "viewer" else "被控端"
-        self.chat_display.append(f"<b style='color:#4CAF50;'>{name}:</b> {text}")
-        self.chat_input.clear()
+    def _chat_rcv(self, t, n):
+        self.cm.append(f"<b style='color:#0070F9'>{n}:</b> {t}")
 
-    def _on_chat_message(self, text: str, name: str):
-        self.chat_display.append(f"<b style='color:#2196F3;'>{name}:</b> {text}")
-        if not self.chat_widget.isVisible():
-            self.btn_chat.setStyleSheet(
-                "QPushButton { background: #f44336; color: white; border: none; border-radius: 4px; padding: 6px 10px; }")
+    # ========== file ==========
+    def _file_dlg(self):
+        if not self.ok: return
+        p, _ = QFileDialog.getOpenFileNames(self, "选择文件")
+        if p: self._send_files(p)
 
-    # ==================== 文件传输 ====================
-
-    def _show_file_dialog(self):
-        if not self.connected:
-            QMessageBox.information(self, "提示", "请先连接")
-            return
-        paths, _ = QFileDialog.getOpenFileNames(self, "选择要发送的文件")
-        if paths:
-            self._send_files(paths)
-
-    def _send_files(self, paths: list):
+    def _send_files(self, paths):
         for fp in paths:
-            fname = os.path.basename(fp)
-            fsize = os.path.getsize(fp)
-            fid = f"f{int(time.time() * 1000)}"
-
-            target = "host" if self.current_role == "viewer" else "viewer"
-            self.ws_thread.send({
-                "type": "file_meta", "file_id": fid,
-                "name": fname, "size": fsize, "target": target,
-            })
-
-            CHUNK = 64 * 1024
-            offset = 0
+            fn = os.path.basename(fp); fs = os.path.getsize(fp)
+            fid = f"f{int(time.time()*1000)}"
+            tg = "host" if self.role == "viewer" else "viewer"
+            self.ws.send({"type":"file_meta","file_id":fid,"name":fn,"size":fs,"target":tg})
+            off = 0; CHUNK = 64*1024
             with open(fp, "rb") as f:
-                while offset < fsize:
-                    chunk = f.read(CHUNK)
-                    b64 = base64.b64encode(chunk).decode()
-                    final = (offset + len(chunk)) >= fsize
-                    self.ws_thread.send({
-                        "type": "file_chunk", "file_id": fid,
-                        "chunk": b64, "offset": offset,
-                        "final": final, "target": target,
-                    })
-                    offset += len(chunk)
+                while off < fs:
+                    c = f.read(CHUNK); b = base64.b64encode(c).decode()
+                    fnl = (off+len(c)) >= fs
+                    self.ws.send({"type":"file_chunk","file_id":fid,"chunk":b,"offset":off,"final":fnl,"target":tg})
+                    off += len(c)
+            log.info(f"sent: {fn} ({fs/1024:.0f}KB)")
 
-            log.info(f"已发送: {fname} ({fsize/1024:.0f}KB)")
+    # ========== mouse/keyboard ==========
+    def _v_mouse(self, e, et):
+        if not self.ok or self.role != "viewer": return
+        x, y = self._map(e.x(), e.y())
+        b = {1:"left",2:"right",4:"middle"}.get(e.button(),"left")
+        self.ws.send({"type":"input","event":et,"data":{"x":x,"y":y,"button":b}})
 
-    # ==================== 隐私屏 ====================
+    def _v_move(self, e):
+        if not self.ok or self.role != "viewer": return
+        x, y = self._map(e.x(), e.y()); n = time.time()
+        if n - self._lm > 0.05:
+            self._lm = n; self.ws.send({"type":"input","event":"mousemove","data":{"x":x,"y":y}})
 
-    def _toggle_privacy(self, checked: bool):
-        self.capture_thread.privacy_mode = checked
+    def _v_wheel(self, e):
+        if not self.ok or self.role != "viewer": return
+        x, y = self._map(e.x(), e.y())
+        self.ws.send({"type":"input","event":"scroll","data":{"x":x,"y":y,"amount":e.angleDelta().y()//120}})
 
-    # ==================== 鼠标事件 ====================
+    def _v_key(self, k):
+        if not self.ok or self.role != "viewer": return
+        self.ws.send({"type":"input","event":"keypress","data":{"key":k}})
 
-    def _viewer_mouse_event(self, event, event_type: str):
-        if not self.connected or self.current_role != "viewer":
-            return
-        rx, ry = self._map_to_remote(event.x(), event.y())
-        btn_map = {1: "left", 2: "right", 4: "middle"}
-        data = {"x": rx, "y": ry, "button": btn_map.get(event.button(), "left")}
-        self.ws_thread.send({"type": "input", "event": event_type, "data": data})
+    def _map(self, lx, ly):
+        if not self.sl.pixmap(): return (lx, ly)
+        p = self.sl.pixmap(); pw, ph = p.width(), p.height()
+        lw, lh = self.sl.width(), self.sl.height()
+        if pw == 0 or ph == 0: return (lx, ly)
+        ox, oy = (lw-pw)//2, (lh-ph)//2
+        return (max(0,int((lx-ox)/pw*self.rx)), max(0,int((ly-oy)/ph*self.ry)))
 
-    def _viewer_mouse_move(self, event):
-        if not self.connected or self.current_role != "viewer":
-            return
-        rx, ry = self._map_to_remote(event.x(), event.y())
-        now = time.time()
-        if now - self._last_mouse_send > 0.05:
-            self._last_mouse_send = now
-            self.ws_thread.send({
-                "type": "input", "event": "mousemove",
-                "data": {"x": rx, "y": ry},
-            })
+    def _k_name(self, k):
+        m = {Qt.Key_Enter:"enter",Qt.Key_Return:"enter",Qt.Key_Tab:"tab",Qt.Key_Escape:"escape",
+            Qt.Key_Backspace:"backspace",Qt.Key_Space:"space",Qt.Key_Up:"up",Qt.Key_Down:"down",
+            Qt.Key_Left:"left",Qt.Key_Right:"right",Qt.Key_Delete:"delete",Qt.Key_Home:"home",
+            Qt.Key_End:"end",Qt.Key_PageUp:"pageup",Qt.Key_PageDown:"pagedown",
+            Qt.Key_Control:"ctrl",Qt.Key_Alt:"alt",Qt.Key_Shift:"shift",Qt.Key_CapsLock:"capslock"}
+        return m.get(k, chr(k) if 32<=k<=126 else "")
 
-    def _viewer_wheel(self, event):
-        if not self.connected or self.current_role != "viewer":
-            return
-        rx, ry = self._map_to_remote(event.x(), event.y())
-        self.ws_thread.send({
-            "type": "input", "event": "scroll",
-            "data": {"x": rx, "y": ry, "amount": event.angleDelta().y() // 120},
-        })
-
-    def _viewer_keypress(self, key_text: str):
-        if not self.connected or self.current_role != "viewer":
-            return
-        self.ws_thread.send({
-            "type": "input", "event": "keypress", "data": {"key": key_text},
-        })
-
-    def _map_to_remote(self, label_x: int, label_y: int):
-        if not self.viewer_label.pixmap():
-            return (label_x, label_y)
-        pix = self.viewer_label.pixmap()
-        pw, ph = pix.width(), pix.height()
-        lw, lh = self.viewer_label.width(), self.viewer_label.height()
-        if pw == 0 or ph == 0:
-            return (label_x, label_y)
-        x_off = (lw - pw) // 2
-        y_off = (lh - ph) // 2
-        rx = int((label_x - x_off) / pw * self.remote_resolution[0])
-        ry = int((label_y - y_off) / ph * self.remote_resolution[1])
-        return (max(0, rx), max(0, ry))
-
-    def _handle_remote_input(self, event: str, data: dict):
-        if not pyautogui:
-            return
+    def _remote_in(self, ev, d):
+        if not pyautogui: return
         try:
-            if event == "mousemove":
-                pyautogui.moveTo(data["x"], data["y"])
-            elif event == "click":
-                pyautogui.click(x=data["x"], y=data["y"], button=data.get("button", "left"))
-            elif event == "mousedown":
-                pyautogui.mouseDown(x=data["x"], y=data["y"], button=data.get("button", "left"))
-            elif event == "mouseup":
-                pyautogui.mouseUp(x=data["x"], y=data["y"], button=data.get("button", "left"))
-            elif event == "scroll":
-                pyautogui.scroll(data.get("amount", 0), x=data["x"], y=data["y"])
-            elif event == "keypress" and Controller and Key:
-                kb = Controller()
-                key = data.get("key", "")
-                special = {
-                    "enter": Key.enter, "return": Key.enter,
-                    "tab": Key.tab, "escape": Key.esc, "esc": Key.esc,
-                    "backspace": Key.backspace, "space": Key.space,
-                    "ctrl": Key.ctrl, "alt": Key.alt, "shift": Key.shift,
-                    "up": Key.up, "down": Key.down,
-                    "left": Key.left, "right": Key.right,
-                    "delete": Key.delete, "home": Key.home, "end": Key.end,
-                    "pageup": Key.page_up, "pagedown": Key.page_down,
-                }
-                if len(key) == 1:
-                    kb.press(key)
-                    kb.release(key)
-                elif key.lower() in special:
-                    kb.press(special[key.lower()])
-                    kb.release(special[key.lower()])
-        except Exception as e:
-            log.error(f"输入失败: {e}")
+            if ev=="click": pyautogui.click(x=d["x"],y=d["y"],button=d.get("button","left"))
+            elif ev=="mousemove": pyautogui.moveTo(d["x"],d["y"])
+            elif ev=="scroll": pyautogui.scroll(d.get("amount",1),x=d["x"],y=d["y"])
+            elif ev=="keypress" and Controller:
+                kb = Controller(); key = d.get("key","")
+                sp = {"enter":Key.enter,"return":Key.enter,"tab":Key.tab,"escape":Key.esc,
+                    "backspace":Key.backspace,"space":Key.space,"ctrl":Key.ctrl,"alt":Key.alt,
+                    "shift":Key.shift,"up":Key.up,"down":Key.down,"left":Key.left,"right":Key.right,
+                    "delete":Key.delete,"home":Key.home,"end":Key.end,"pageup":Key.page_up,"pagedown":Key.page_down}
+                if len(key)==1: kb.press(key); kb.release(key)
+                elif key.lower() in sp: kb.press(sp[key.lower()]); kb.release(sp[key.lower()])
+        except: pass
 
-    def _qt_key_to_name(self, qt_key):
-        m = {
-            Qt.Key_Enter: "enter", Qt.Key_Return: "enter",
-            Qt.Key_Tab: "tab", Qt.Key_Escape: "escape",
-            Qt.Key_Backspace: "backspace", Qt.Key_Space: "space",
-            Qt.Key_Up: "up", Qt.Key_Down: "down",
-            Qt.Key_Left: "left", Qt.Key_Right: "right",
-            Qt.Key_Delete: "delete", Qt.Key_Home: "home", Qt.Key_End: "end",
-            Qt.Key_PageUp: "pageup", Qt.Key_PageDown: "pagedown",
-            Qt.Key_Control: "ctrl", Qt.Key_Alt: "alt", Qt.Key_Shift: "shift",
-            Qt.Key_CapsLock: "capslock",
-        }
-        if qt_key in m:
-            return m[qt_key]
-        return chr(qt_key) if 32 <= qt_key <= 126 else ""
-
-    # ==================== 窗口事件 ====================
-
-    def closeEvent(self, event):
-        if self.current_role == "host" and self.connected:
-            event.ignore()
-            self.hide()
-            self.tray_icon.show()
-            self.tray_icon.showMessage("RemoteControl", "后台运行中", QSystemTrayIcon.Information, 2000)
+    # ========== close ==========
+    def closeEvent(self, e):
+        if self.role == "host" and self.ok:
+            e.ignore(); self.hide(); self.ti.show()
+            self.ti.showMessage("RemoteControl","后台运行中",QSystemTrayIcon.Information,2000)
             return
-        self._frame_timer.stop()
-        self.capture_thread.stop_capture()
-        self.capture_thread.wait(1000)
-        self.ws_thread._should_reconnect = False
-        self.ws_thread.disconnect()
-        self.ws_thread.wait(1000)
-        event.accept()
+        self._ft.stop(); self.cap.stop_cap(); self.cap.wait(1000)
+        self.ws._recon=False; self.ws.stop(); self.ws.wait(1000)
+        e.accept()
 
-
-# ==================== 入口 ====================
-
-def main():
-    QApplication.setStyle("Fusion")
-    palette = QPalette()
-    palette.setColor(QPalette.Window, QColor(26, 26, 46))
-    palette.setColor(QPalette.WindowText, QColor(200, 200, 212))
-    palette.setColor(QPalette.Base, QColor(15, 52, 96))
-    palette.setColor(QPalette.Text, QColor(224, 224, 255))
-    palette.setColor(QPalette.Button, QColor(22, 33, 62))
-    palette.setColor(QPalette.ButtonText, QColor(200, 200, 212))
-    palette.setColor(QPalette.Highlight, QColor(76, 175, 80))
-    QApplication.setPalette(palette)
-
-    app = QApplication(sys.argv)
-    app.setApplicationName(APP_NAME)
-
-    missing = []
-    if not websocket:
-        missing.append("websocket-client")
-    if not mss:
-        missing.append("mss")
-    if missing:
-        print(f"缺少: {', '.join(missing)}")
-        sys.exit(1)
-
-    w = RemoteControlApp()
-    w.show()
-    sys.exit(app.exec_())
-
-
+# ============ main ============
 if __name__ == "__main__":
-    main()
+    QApplication.setStyle("Fusion")
+    app = QApplication(sys.argv); app.setApplicationName("RemoteControl")
+    if not websocket or not mss:
+        print("Need: pip install websocket-client mss")
+        sys.exit(1)
+    w = MainWin(); w.show(); sys.exit(app.exec_())
