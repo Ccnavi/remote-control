@@ -4,9 +4,10 @@ on:
   push:
     tags:
       - 'v*'
-    branches:
-      - master
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -33,21 +34,15 @@ jobs:
           cd client
           pyinstaller --onefile --windowed --name RemoteControl --clean --noconfirm remote_control.py
 
-      - name: Rename with version
-        shell: bash
-        run: |
-          VERSION=${GITHUB_REF_NAME:-dev}
-          mv client/dist/RemoteControl.exe "client/dist/RemoteControl_${VERSION}.exe"
-
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: RemoteControl-Windows
-          path: client/dist/RemoteControl_*.exe
+          path: client/dist/RemoteControl.exe
 
       - name: Create Release
-        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: client/dist/RemoteControl_*.exe
-          generate_release_notes: true
+          files: client/dist/RemoteControl.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
