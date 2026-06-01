@@ -339,10 +339,9 @@ class RemoteControlApp(QMainWindow):
 
         # ====== 被控端设置 ======
         host_group = QGroupBox("被控端设置")
-        host_layout = QGridLayout(host_group)
+        host_layout = QVBoxLayout(host_group)
         host_layout.setSpacing(6)
 
-        host_layout.addWidget(QLabel("画质:"), 0, 0)
         # 速度模式预设
         speed_layout = QHBoxLayout()
         self.btn_fast = QPushButton("🚀 流畅")
@@ -358,39 +357,47 @@ class RemoteControlApp(QMainWindow):
         speed_layout.addWidget(self.btn_balanced)
         speed_layout.addWidget(self.btn_quality)
         host_layout.addLayout(speed_layout)
-        host_layout.addWidget(QLabel(""))
 
         self.preset_label = QLabel("当前: 均衡模式")
         self.preset_label.setStyleSheet("color:#FF9800; font-weight:bold;")
         host_layout.addWidget(self.preset_label)
 
-        host_layout.addWidget(QLabel("画质:"))
+        # 画质
+        q_layout = QHBoxLayout()
+        q_layout.addWidget(QLabel("画质:"))
         self.quality_slider = QSlider(Qt.Horizontal)
         self.quality_slider.setRange(10, 95)
         self.quality_slider.setValue(40)
         self.quality_label = QLabel("40")
         self.quality_slider.valueChanged.connect(
             lambda v: self.quality_label.setText(str(v)))
-        host_layout.addWidget(self.quality_slider, 0, 1)
-        host_layout.addWidget(self.quality_label, 0, 2)
+        q_layout.addWidget(self.quality_slider)
+        q_layout.addWidget(self.quality_label)
+        host_layout.addLayout(q_layout)
 
-        host_layout.addWidget(QLabel("帧率:"))
+        f_layout = QHBoxLayout()
+        f_layout.addWidget(QLabel("帧率:"))
         self.fps_spin = QSpinBox()
         self.fps_spin.setRange(1, 30)
         self.fps_spin.setValue(10)
-        host_layout.addWidget(self.fps_spin, 1, 1)
+        f_layout.addWidget(self.fps_spin)
+        host_layout.addLayout(f_layout)
 
-        host_layout.addWidget(QLabel("缩放:"))
+        s_layout = QHBoxLayout()
+        s_layout.addWidget(QLabel("缩放:"))
         self.scale_combo = QComboBox()
         self.scale_combo.addItems(["原始", "75%", "50% (推荐)", "25%"])
         self.scale_combo.setCurrentIndex(2)  # 50%
-        host_layout.addWidget(self.scale_combo, 2, 1)
+        s_layout.addWidget(self.scale_combo)
+        host_layout.addLayout(s_layout)
 
-        host_layout.addWidget(QLabel("显示器:"))
+        m_layout = QHBoxLayout()
+        m_layout.addWidget(QLabel("显示器:"))
         self.monitor_spin = QSpinBox()
         self.monitor_spin.setRange(1, 4)
         self.monitor_spin.setValue(1)
-        host_layout.addWidget(self.monitor_spin, 3, 1)
+        m_layout.addWidget(self.monitor_spin)
+        host_layout.addLayout(m_layout)
 
         host_group.setEnabled(False)
         left_layout.addWidget(host_group)
