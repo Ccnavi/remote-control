@@ -564,6 +564,37 @@ class RemoteControlApp(QMainWindow):
         ver_label.setAlignment(Qt.AlignCenter)
         left_layout.addWidget(ver_label)
 
+        # ====== 聊天面板（右侧覆盖层） ======
+        self.chat_widget = QFrame()
+        self.chat_widget.setFixedWidth(280)
+        self.chat_widget.setStyleSheet("background:#2b2b3d; border-left:1px solid #3d3d5c;")
+        self.chat_widget.hide()
+
+        chat_layout_c = QVBoxLayout(self.chat_widget)
+        chat_layout_c.setContentsMargins(8, 8, 8, 8)
+        chat_layout_c.setSpacing(6)
+
+        chat_title = QLabel("💬 聊天")
+        chat_title.setStyleSheet("font-size:14px; font-weight:bold; color:#fff;")
+        chat_layout_c.addWidget(chat_title)
+
+        self.chat_display = QTextEdit()
+        self.chat_display.setReadOnly(True)
+        self.chat_display.setStyleSheet("background:#1e1e2e; color:#ccc; border:1px solid #3d3d5c; border-radius:4px;")
+        chat_layout_c.addWidget(self.chat_display)
+
+        chat_input_layout = QHBoxLayout()
+        self.chat_input = QLineEdit()
+        self.chat_input.setPlaceholderText("输入消息...")
+        self.chat_input.returnPressed.connect(self._send_chat)
+        chat_input_layout.addWidget(self.chat_input)
+
+        self.chat_send_btn = QPushButton("发送")
+        self.chat_send_btn.setStyleSheet("background:#4CAF50; color:white; padding:6px 12px;")
+        self.chat_send_btn.clicked.connect(self._send_chat)
+        chat_input_layout.addWidget(self.chat_send_btn)
+        chat_layout_c.addLayout(chat_input_layout)
+
         # ========== 右侧画面区 ==========
         right_panel = QFrame()
         right_panel.setStyleSheet("background: #111;")
