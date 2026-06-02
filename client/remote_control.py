@@ -10,9 +10,10 @@ from PyQt5.QtWidgets import (
     QLabel, QPushButton, QLineEdit, QComboBox, QFrame,
     QTextEdit, QMessageBox, QSystemTrayIcon, QMenu, QAction,
     QSlider, QCheckBox, QSpinBox, QFileDialog, QScrollArea,
+    QRadioButton,
 )
 from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal
-from PyQt5.QtGui import QPixmap, QIcon, QColor, QPalette, QWheelEvent
+from PyQt5.QtGui import QPixmap, QIcon, QColor, QPalette, QWheelEvent, QCursor
 
 try: import websocket
 except: websocket = None
