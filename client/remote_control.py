@@ -10,7 +10,7 @@ from PyQt5.QtWidgets import (
     QLabel, QPushButton, QLineEdit, QComboBox, QFrame,
     QTextEdit, QMessageBox, QSystemTrayIcon, QMenu, QAction,
     QSlider, QCheckBox, QSpinBox, QFileDialog, QScrollArea,
-    QRadioButton,
+    QRadioButton, QStackedWidget,
 )
 from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal
 from PyQt5.QtGui import QPixmap, QIcon, QColor, QPalette, QWheelEvent, QCursor
@@ -26,7 +26,7 @@ except: pyautogui = None
 try: from pynput.keyboard import Controller, Key
 except: Controller = Key = None
 
-APP_VER = "3.1.0"
+APP_VER = "3.1.2"
 SERVER = "ws://47.92.148.99:8500"
 log = logging.getLogger("rc")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
